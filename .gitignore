@@ -1,0 +1,10 @@
+bridge
+codex-adapter
+gemini-adapter
+claude-adapter
+bridge.db
+*.db
+*.log
+*.tar.gz
+.env
+.env.*

@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package echohelix.adapter;
+
+service Adapter {
+  rpc StartRun(StartRunRequest) returns (StartRunResponse);
+  rpc StreamEvents(StreamEventsRequest) returns (stream AgentEvent);
+  rpc CancelRun(CancelRunRequest) returns (CancelRunResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Capabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+}
+
+message StartRunRequest {
+  string run_id = 1;
+  string workspace_path = 2;
+  string prompt = 3;
+  string model = 4;
+  string profile = 5;
+  string sandbox = 6;
+  string schema_version = 7;
+  int32 timeout_sec = 8;
+}
+
+message StartRunResponse {
+  bool accepted = 1;
+  string error = 2;
+}
+
+message StreamEventsRequest {
+  string run_id = 1;
+}
+
+message CancelRunRequest {
+  string run_id = 1;
+}
+
+message CancelRunResponse {
+  bool cancelled = 1;
+  string error = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message CapabilitiesRequest {}
+
+message CapabilitiesResponse {
+  string backend = 1;
+  repeated string event_types = 2;
+  bool supports_cancel = 3;
+  bool supports_pty = 4;
+  repeated string schema_versions = 5;
+  string preferred_schema_version = 6;
+  repeated string compat_fields = 7;
+}
+
+message AgentEvent {
+  string run_id = 1;
+  int64 seq = 2;
+  int64 ts_unix = 3;
+  string type = 4;
+  map<string, string> payload = 5;
+  string source = 6;
+  string channel = 7;
+  string format = 8;
+  string role = 9;
+  string schema_version = 10;
+  string compat_text = 11;
+  string compat_status = 12;
+  bool compat_is_error = 13;
+}

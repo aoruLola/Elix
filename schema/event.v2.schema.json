@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://echohelix.local/schema/event.v2.schema.json",
+  "title": "EchoHelix Event v2",
+  "type": "object",
+  "required": [
+    "run_id",
+    "seq",
+    "ts",
+    "schema_version",
+    "type",
+    "channel",
+    "format",
+    "role",
+    "backend"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "v1",
+        "v2"
+      ]
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "token",
+        "tool_call",
+        "tool_result",
+        "patch",
+        "status",
+        "done",
+        "error"
+      ]
+    },
+    "channel": {
+      "type": "string",
+      "enum": [
+        "final",
+        "working",
+        "system"
+      ]
+    },
+    "format": {
+      "type": "string",
+      "enum": [
+        "markdown",
+        "plain",
+        "json",
+        "diff"
+      ]
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "assistant",
+        "system"
+      ]
+    },
+    "compat": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "is_error": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "backend": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}
