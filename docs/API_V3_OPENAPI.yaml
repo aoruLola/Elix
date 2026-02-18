@@ -1,0 +1,1264 @@
+openapi: 3.0.3
+info:
+  title: EchoHelix Bridge API v3
+  version: 3.0.0
+  description: |
+    Bridge control-plane API with scoped session auth.
+    `BRIDGE_AUTH_TOKEN` is bootstrap-only and is intended for pairing/admin ops.
+    Workload operations (`/runs*`) should use short-lived session access tokens.
+servers:
+  - url: http://127.0.0.1:8765
+security:
+  - bearerAuth: []
+paths:
+  /api/v3/pair/start:
+    post:
+      summary: Start secure pairing flow
+      description: Requires bootstrap/static token (or internal admin mode).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Scope"
+                ttl_seconds:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: Pair code and challenge issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairStartResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/v3/pair/complete:
+    post:
+      summary: Complete pairing with wallet signature
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairCompleteRequest"
+      responses:
+        "200":
+          description: Session tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairCompleteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/v3/session/refresh:
+    post:
+      summary: Rotate session tokens
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        "200":
+          description: Rotated token pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRefreshResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/v3/devices:
+    get:
+      summary: List paired devices
+      responses:
+        "200":
+          description: Device list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Device"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/devices/{address}/rename:
+    post:
+      summary: Rename a paired device
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Rename success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address: { type: string }
+                  renamed: { type: boolean }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/devices/{address}/revoke:
+    post:
+      summary: Revoke a paired device and all its sessions
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Revoke success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address: { type: string }
+                  revoked: { type: boolean }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/backends:
+    get:
+      summary: List backend health/capabilities
+      responses:
+        "200":
+          description: Backends list
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/emergency/stop:
+    post:
+      summary: Activate emergency stop and cancel active runs
+      description: Requires bootstrap/static token (or internal admin mode).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Emergency stop activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmergencyStopResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/emergency/resume:
+    post:
+      summary: Resume run submissions after emergency stop
+      description: Requires bootstrap/static token (or internal admin mode).
+      responses:
+        "200":
+          description: Emergency state cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmergencyState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/emergency/status:
+    get:
+      summary: Get emergency stop state
+      description: Requires bootstrap/static token (or internal admin mode).
+      responses:
+        "200":
+          description: Current emergency state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmergencyState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/files:
+    post:
+      summary: Upload attachment file
+      description: Requires session scope `runs:submit`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Uploaded file metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadedFile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          description: Uploaded file too large
+  /api/v3/files/{file_id}:
+    get:
+      summary: Get uploaded file metadata
+      parameters:
+        - in: path
+          name: file_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: File metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadedFile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: File not found
+  /api/v3/sessions:
+    post:
+      summary: Create interactive session
+      description: Requires session scope `runs:submit`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      summary: List interactive sessions
+      description: Requires session scope `runs:read`.
+      responses:
+        "200":
+          description: Session list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}:
+    get:
+      summary: Get session status
+      description: Requires session scope `runs:read`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      summary: Close session
+      description: Requires session scope `runs:cancel`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionCloseResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/turns:
+    post:
+      summary: Start or steer a turn
+      description: Requires session scope `runs:submit`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartTurnRequest"
+      responses:
+        "202":
+          description: Turn accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartTurnResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/interrupt:
+    post:
+      summary: Interrupt active turn
+      description: Requires session scope `runs:cancel`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InterruptTurnRequest"
+      responses:
+        "200":
+          description: Interrupt sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInterruptResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/backend/status:
+    get:
+      summary: Get backend passthrough status
+      description: |
+        Requires session scope `runs:read`.
+        For Codex sessions, this forwards `status` to the active app-server and returns its result payload.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Backend status payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackendStatusResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/backend/call:
+    post:
+      summary: Call backend RPC passthrough
+      description: |
+        Scope depends on method:
+        `status` -> `runs:read`; `turn/interrupt` -> `runs:cancel`; others -> `runs:submit`.
+        For Codex sessions, this forwards arbitrary app-server RPC `method` and `params`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackendCallRequest"
+      responses:
+        "200":
+          description: Backend RPC response payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackendCallResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/events:
+    get:
+      summary: Stream session events (WebSocket)
+      description: Requires session scope `runs:read`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: from_seq
+          schema:
+            type: integer
+      responses:
+        "101":
+          description: Switching Protocols
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/requests:
+    get:
+      summary: List pending server requests
+      description: Requires session scope `runs:read`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pending requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingRequestListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/requests/{request_id}:
+    post:
+      summary: Resolve a pending server request
+      description: Requires session scope `runs:cancel`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: request_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveRequestInput"
+      responses:
+        "200":
+          description: Request resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestResolvedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/approvals:
+    get:
+      summary: List pending approvals
+      description: Requires session scope `runs:read`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pending approvals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/sessions/{session_id}/approvals/{request_id}:
+    post:
+      summary: Resolve approval request
+      description: Requires session scope `runs:cancel`.
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: request_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalDecisionRequest"
+      responses:
+        "200":
+          description: Approval resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestResolvedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/runs:
+    post:
+      summary: Submit a run
+      description: Requires session scope `runs:submit`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunSubmitRequest"
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSubmitResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v3/runs/{run_id}:
+    get:
+      summary: Get run status
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Run state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/runs/{run_id}/cancel:
+    post:
+      summary: Cancel run
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cancellation accepted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/runs/{run_id}/events:
+    get:
+      summary: Stream run events (WebSocket)
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: from_seq
+          schema:
+            type: integer
+      responses:
+        "101":
+          description: Switching Protocols
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+  responses:
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/ErrorEnvelope"
+              - type: object
+                properties:
+                  error:
+                    type: string
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After:
+          schema:
+            type: string
+          description: Seconds to wait before retrying
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ServiceUnavailable:
+      description: Service unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    Scope:
+      type: string
+      enum:
+        - pair:start
+        - runs:submit
+        - runs:read
+        - runs:cancel
+        - backends:read
+        - devices:read
+        - devices:write
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          oneOf:
+            - type: string
+            - type: object
+              properties:
+                code: { type: string }
+                message: { type: string }
+    PairStartResponse:
+      type: object
+      properties:
+        pair_code: { type: string }
+        challenge: { type: string }
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        expires_at:
+          type: string
+          format: date-time
+        elix_uri:
+          type: string
+        pair_version:
+          type: string
+    PairCompleteRequest:
+      type: object
+      required: [pair_code, public_key, signature]
+      properties:
+        pair_code: { type: string }
+        public_key: { type: string }
+        signature: { type: string }
+        device_name: { type: string }
+    PairCompleteResponse:
+      type: object
+      properties:
+        address: { type: string }
+        public_key: { type: string }
+        device_name: { type: string }
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_at:
+          type: string
+          format: date-time
+        refresh_expires_at:
+          type: string
+          format: date-time
+    SessionRefreshResponse:
+      type: object
+      properties:
+        address: { type: string }
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_at:
+          type: string
+          format: date-time
+        refresh_expires_at:
+          type: string
+          format: date-time
+    Device:
+      type: object
+      properties:
+        address: { type: string }
+        name: { type: string }
+        public_key: { type: string }
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        revoked_at:
+          type: string
+          format: date-time
+        revoke_reason:
+          type: string
+    Session:
+      type: object
+      properties:
+        session_id: { type: string }
+        backend: { type: string }
+        workspace_id: { type: string }
+        workspace_path: { type: string }
+        thread_id: { type: string }
+        status:
+          type: string
+          enum: [starting, ready, closed, failed]
+        error: { type: string }
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SessionListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+    CreateSessionRequest:
+      type: object
+      required: [workspace_path]
+      properties:
+        workspace_id: { type: string }
+        workspace_path: { type: string }
+        backend:
+          type: string
+          enum: [codex]
+          default: codex
+        thread_id:
+          type: string
+          description: Provide to resume existing Codex thread.
+        model: { type: string }
+        approval_policy: { type: string }
+        sandbox:
+          type: string
+          enum: [read-only, workspace-write, danger-full-access]
+        config:
+          type: object
+          additionalProperties: true
+    StartTurnRequest:
+      type: object
+      properties:
+        prompt:
+          type: string
+          description: Required when `input` is empty.
+        input:
+          type: array
+          description: Raw Codex app-server turn input payload.
+          items:
+            type: object
+            additionalProperties: true
+        model: { type: string }
+        approval_policy: { type: string }
+        sandbox:
+          type: string
+          enum: [read-only, workspace-write, danger-full-access]
+        output_schema:
+          type: object
+          additionalProperties: true
+        expected_turn_id:
+          type: string
+          description: For steer requests, defaults to current active turn id.
+        steer:
+          type: boolean
+          description: `true` maps to `turn/steer`; otherwise `turn/start`.
+    StartTurnResponse:
+      type: object
+      properties:
+        session_id: { type: string }
+        thread_id: { type: string }
+        turn_id: { type: string }
+        status: { type: string }
+    InterruptTurnRequest:
+      type: object
+      properties:
+        turn_id:
+          type: string
+          description: Optional; defaults to active turn when omitted.
+    SessionInterruptResponse:
+      type: object
+      properties:
+        session_id: { type: string }
+        interrupted: { type: boolean }
+    SessionCloseResponse:
+      type: object
+      properties:
+        session_id: { type: string }
+        closed: { type: boolean }
+    BackendStatusResponse:
+      type: object
+      properties:
+        session_id: { type: string }
+        backend: { type: string }
+        thread_id: { type: string }
+        result:
+          description: Raw backend status payload.
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: array
+              items: {}
+            - type: string
+            - type: number
+            - type: boolean
+        fetched_at:
+          type: string
+          format: date-time
+    BackendCallRequest:
+      type: object
+      required: [method]
+      properties:
+        method:
+          type: string
+        params:
+          description: Raw backend RPC params (object/array/scalar/null).
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: array
+              items: {}
+            - type: string
+            - type: number
+            - type: boolean
+        timeout_ms:
+          type: integer
+          minimum: 1
+          maximum: 600000
+          description: Optional call timeout override for this request (max 600000 ms).
+    BackendCallResponse:
+      type: object
+      properties:
+        session_id: { type: string }
+        backend: { type: string }
+        thread_id: { type: string }
+        method: { type: string }
+        result:
+          description: Raw backend RPC result payload.
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: array
+              items: {}
+            - type: string
+            - type: number
+            - type: boolean
+        called_at:
+          type: string
+          format: date-time
+    SessionEvent:
+      type: object
+      properties:
+        session_id: { type: string }
+        seq: { type: integer }
+        ts:
+          type: string
+          format: date-time
+        type: { type: string }
+        method: { type: string }
+        payload:
+          type: object
+          additionalProperties: true
+    PendingRequest:
+      type: object
+      properties:
+        request_id: { type: string }
+        method: { type: string }
+        kind:
+          type: string
+          enum: [approval, request_user_input, dynamic_tool, unsupported]
+        params:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+        resolved:
+          type: boolean
+    PendingRequestListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PendingRequest"
+    Approval:
+      type: object
+      properties:
+        request_id: { type: string }
+        method: { type: string }
+        thread_id: { type: string }
+        turn_id: { type: string }
+        item_id: { type: string }
+        reason: { type: string }
+        command: { type: string }
+        cwd: { type: string }
+        payload:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        resolved:
+          type: boolean
+    ApprovalListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Approval"
+    ResolveRequestInput:
+      type: object
+      properties:
+        result:
+          type: object
+          additionalProperties: true
+        error:
+          $ref: "#/components/schemas/ResolveError"
+    ResolveError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: integer }
+        message: { type: string }
+        data:
+          type: object
+          additionalProperties: true
+    ApprovalDecisionRequest:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum: [accept, decline]
+        for_session:
+          type: boolean
+          description: Applies to accept decision as "remember for this session".
+    RequestResolvedResponse:
+      type: object
+      properties:
+        session_id: { type: string }
+        request_id: { type: string }
+        resolved: { type: boolean }
+    RunSubmitRequest:
+      type: object
+      required: [workspace_id, workspace_path, backend, prompt]
+      properties:
+        workspace_id: { type: string }
+        workspace_path: { type: string }
+        backend: { type: string }
+        prompt: { type: string }
+        context:
+          type: object
+          description: |
+            Optional run context. Attachments can be passed as:
+            `{"attachments":[{"file_id":"<id>","alias":"spec.md"}]}`
+          additionalProperties: true
+        options:
+          type: object
+          properties:
+            model: { type: string }
+            profile: { type: string }
+            sandbox:
+              type: string
+              enum: [read-only, workspace-write, danger-full-access]
+            schema_version:
+              type: string
+              enum: [v1, v2]
+    RunSubmitResponse:
+      type: object
+      properties:
+        run_id: { type: string }
+        status: { type: string }
+        stream_url: { type: string }
+        created_at:
+          type: string
+          format: date-time
+    TerminalInfo:
+      type: object
+      properties:
+        is_terminal:
+          type: boolean
+        outcome:
+          type: string
+          enum: [completed, failed, cancelled]
+        reason_code:
+          type: string
+          enum:
+            - success
+            - backend_error
+            - timeout
+            - policy_denied
+            - cancelled_by_user
+            - cancelled
+            - contract_error
+            - in_progress
+        reason:
+          type: string
+    Run:
+      type: object
+      properties:
+        run_id: { type: string }
+        workspace_id: { type: string }
+        workspace_path: { type: string }
+        backend: { type: string }
+        prompt: { type: string }
+        context:
+          type: object
+          additionalProperties: true
+        options:
+          type: object
+          properties:
+            model: { type: string }
+            profile: { type: string }
+            sandbox: { type: string }
+            schema_version: { type: string }
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunAttachment"
+        status:
+          type: string
+          enum: [queued, running, streaming, cancelling, cancelled, completed, failed]
+        error:
+          type: string
+        terminal:
+          $ref: "#/components/schemas/TerminalInfo"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    UploadedFile:
+      type: object
+      properties:
+        file_id: { type: string }
+        original_name: { type: string }
+        mime_type: { type: string }
+        size_bytes: { type: integer }
+        sha256: { type: string }
+        created_by: { type: string }
+        created_at:
+          type: string
+          format: date-time
+    RunAttachment:
+      type: object
+      properties:
+        file_id: { type: string }
+        alias: { type: string }
+        path: { type: string }
+        size_bytes: { type: integer }
+        sha256: { type: string }
+    EmergencyState:
+      type: object
+      properties:
+        active:
+          type: boolean
+        reason:
+          type: string
+        activated_at:
+          type: string
+          format: date-time
+    EmergencyStopResponse:
+      allOf:
+        - $ref: "#/components/schemas/EmergencyState"
+        - type: object
+          properties:
+            cancelled_runs:
+              type: integer

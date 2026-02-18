@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Elix Bridge Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg">
+    <div class="blob blob-a"></div>
+    <div class="blob blob-b"></div>
+  </div>
+  <main class="shell">
+    <header class="hero">
+      <p class="kicker">ELIX BRIDGE</p>
+      <h1>Console</h1>
+      <p class="sub">Pair devices, inspect backends, launch runs.</p>
+    </header>
+
+    <section class="card">
+      <h2>Connection</h2>
+      <label>Base URL <input id="baseUrl" value="http://127.0.0.1:8765" /></label>
+      <label>Bootstrap Token <input id="bootstrapToken" placeholder="echohelix-dev-token" /></label>
+      <label>Session Token <input id="sessionToken" placeholder="paired access token" /></label>
+      <div class="row">
+        <button id="healthBtn">Health</button>
+        <button id="backendsBtn">Backends</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Pair Start</h2>
+      <div class="row">
+        <button id="pairStartBtn">Start Pair</button>
+      </div>
+      <pre id="pairStartOut"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Submit Run</h2>
+      <label>Workspace Path <input id="workspacePath" value="/tmp/demo" /></label>
+      <label>Backend
+        <select id="backend">
+          <option value="codex">codex</option>
+          <option value="gemini">gemini</option>
+          <option value="claude">claude</option>
+        </select>
+      </label>
+      <label>Prompt <textarea id="prompt">reply exactly ok</textarea></label>
+      <div class="row">
+        <button id="submitRunBtn">Submit</button>
+        <button id="pollRunBtn">Poll Latest</button>
+      </div>
+      <label>Last Run ID <input id="runId" /></label>
+      <pre id="runOut"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+

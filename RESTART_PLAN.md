@@ -68,3 +68,35 @@
 4. 默认启用用户消息降噪（可通过开关恢复）。
 5. 已新增 `claude-adapter` 与 `claude driver`（默认关闭，模板映射已接入 Runtime）。
 6. 已验证 Claude API 模式可用：`ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL` 可直接驱动 `claude` CLI 并通过 bridge 完成 run。
+7. 已新增跨后端一键 e2e 脚本：可按 `codex/gemini/claude` 批量提交 run 并汇总终态结果。
+
+## 10. 安全配对进展（2026-02-18）
+1. 已完成 `pair code + challenge 签名 + 短期会话 token`：
+   - `POST /api/v3/pair/start`
+   - `POST /api/v3/pair/complete`
+   - `POST /api/v3/session/refresh`
+2. 已完成设备管理：
+   - `GET /api/v3/devices`
+   - `POST /api/v3/devices/{address}/rename`
+   - `POST /api/v3/devices/{address}/revoke`
+3. 已完成助记词/密钥工具链：
+   - `cmd/elix-wallet` 支持 `generate/recover/sign`
+   - Bridge 仅存公钥与地址，私钥保留在客户端
+4. 已补测试：
+   - `internal/auth` 服务测试
+   - `internal/api` 配对/刷新/设备/授权集成测试
+   - `internal/wallet` 助记词恢复与签名验证测试
+5. 已收紧静态 token 权限：
+   - `BRIDGE_AUTH_TOKEN` 仅保留 bootstrap/运维 scope（不含 run scope）
+   - `/api/v3/runs*` 强制使用 session access token
+6. 已补充 API 契约文档：
+   - `docs/API_V3_OPENAPI.yaml`
+7. 已完成安全收口增强：
+   - `pair/start` IP 限流（超限返回 `429` + `Retry-After`）
+   - 配对、鉴权、refresh 失败审计日志
+   - refresh/鉴权/配对失败爆发告警日志（`security_alert`）
+8. 已补充守护进程部署能力：
+   - 新增 systemd unit 模板与环境模板
+   - 新增一键安装脚本 `scripts/install_systemd_bridge.sh`
+   - bridge 默认按自身可执行文件目录解析 adapter 二进制路径，减少 `cd` 依赖
+   - 默认服务/可执行命名统一为 `elix-bridge`，降低命令输入成本

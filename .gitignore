@@ -1,10 +1,13 @@
 bridge
+elix-bridge
 codex-adapter
 gemini-adapter
 claude-adapter
+elix-wallet
 bridge.db
 *.db
 *.log
 *.tar.gz
 .env
 .env.*
+frontend/

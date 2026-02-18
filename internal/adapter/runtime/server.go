@@ -16,6 +16,8 @@ import (
 	adapterrpc "echohelix/internal/rpc/adapter"
 )
 
+const maxScanTokenSize = 4 * 1024 * 1024
+
 type NormalizedEvent struct {
 	Type    string
 	Channel string
@@ -473,6 +475,7 @@ func (r *runState) finish() {
 func scanPipe(reader io.Reader, onLine func(string), wg *sync.WaitGroup) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxScanTokenSize)
 	for scanner.Scan() {
 		onLine(scanner.Text())
 	}

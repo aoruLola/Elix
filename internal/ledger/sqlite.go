@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"echohelix/internal/events"
@@ -36,6 +37,23 @@ type RunOptionsRecord struct {
 	Profile       string
 	Sandbox       string
 	SchemaVersion string
+}
+
+type TokenUsageRecord struct {
+	RunID        string
+	Backend      string
+	InputTokens  int64
+	OutputTokens int64
+	TotalTokens  int64
+	RecordedAt   time.Time
+}
+
+type TokenUsageAggregate struct {
+	Backend      string
+	RunCount     int64
+	InputTokens  int64
+	OutputTokens int64
+	TotalTokens  int64
 }
 
 type persistedContext struct {
@@ -86,7 +104,36 @@ CREATE TABLE IF NOT EXISTS events (
   source TEXT NOT NULL,
   UNIQUE(run_id, seq)
 );
-CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);`
+CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
+CREATE TABLE IF NOT EXISTS run_usage (
+  run_id TEXT PRIMARY KEY,
+  backend TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_usage_backend_recorded_at ON run_usage(backend, recorded_at);
+CREATE TABLE IF NOT EXISTS files (
+  file_id TEXT PRIMARY KEY,
+  storage_key TEXT NOT NULL UNIQUE,
+  original_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at);
+CREATE TABLE IF NOT EXISTS run_attachments (
+  run_id TEXT NOT NULL,
+  file_id TEXT NOT NULL,
+  alias TEXT NOT NULL,
+  materialized_path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(run_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_run_attachments_run_id ON run_attachments(run_id);`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
 	}
@@ -103,6 +150,9 @@ CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);`
 		return err
 	}
 	if err := s.ensureEventColumn(ctx, "compat_json", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.initAuthSchema(ctx); err != nil {
 		return err
 	}
 	return nil
@@ -256,4 +306,59 @@ func (s *Store) NextSeq(ctx context.Context, runID string) (int64, error) {
 		return 1, nil
 	}
 	return maxSeq.Int64 + 1, nil
+}
+
+func (s *Store) UpsertTokenUsage(ctx context.Context, rec TokenUsageRecord) error {
+	if rec.RunID == "" {
+		return fmt.Errorf("run id is required")
+	}
+	if rec.RecordedAt.IsZero() {
+		rec.RecordedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO run_usage(run_id, backend, input_tokens, output_tokens, total_tokens, recorded_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(run_id) DO UPDATE SET
+		   backend=excluded.backend,
+		   input_tokens=excluded.input_tokens,
+		   output_tokens=excluded.output_tokens,
+		   total_tokens=excluded.total_tokens,
+		   recorded_at=excluded.recorded_at`,
+		rec.RunID,
+		rec.Backend,
+		rec.InputTokens,
+		rec.OutputTokens,
+		rec.TotalTokens,
+		rec.RecordedAt.UTC().Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func (s *Store) AggregateTokenUsage(ctx context.Context, from, to time.Time, backend string) ([]TokenUsageAggregate, error) {
+	base := `SELECT backend, COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0)
+	         FROM run_usage
+	         WHERE recorded_at >= ? AND recorded_at < ?`
+	args := []any{from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano)}
+	if strings.TrimSpace(backend) != "" {
+		base += ` AND backend = ?`
+		args = append(args, strings.TrimSpace(backend))
+	}
+	base += ` GROUP BY backend ORDER BY backend ASC`
+
+	rows, err := s.db.QueryContext(ctx, base, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TokenUsageAggregate, 0, 8)
+	for rows.Next() {
+		var agg TokenUsageAggregate
+		if err := rows.Scan(&agg.Backend, &agg.RunCount, &agg.InputTokens, &agg.OutputTokens, &agg.TotalTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, agg)
+	}
+	return out, rows.Err()
 }

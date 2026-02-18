@@ -2,8 +2,12 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +30,11 @@ type Service struct {
 
 	mu     sync.Mutex
 	active map[string]*activeRun
+
+	dailyTokenQuota map[string]int64
+	fileStoreDir    string
+	maxUploadBytes  int64
+	emergency       EmergencyState
 }
 
 type activeRun struct {
@@ -34,7 +43,10 @@ type activeRun struct {
 	seq           int64
 	status        string
 	schemaVersion string
+	backend       string
 }
+
+var ErrEmergencyStopActive = errors.New("bridge emergency stop is active")
 
 func NewService(
 	ledgerStore *ledger.Store,
@@ -47,21 +59,28 @@ func NewService(
 	if maxConcurrent <= 0 {
 		maxConcurrent = 32
 	}
+	defaultFileStoreDir := filepath.Join(os.TempDir(), "echohelix-files")
 	return &Service{
-		ledger:        ledgerStore,
-		registry:      registry,
-		hub:           hub,
-		policy:        p,
-		runTimeout:    runTimeout,
-		maxConcurrent: maxConcurrent,
-		slots:         make(chan struct{}, maxConcurrent),
-		active:        map[string]*activeRun{},
+		ledger:          ledgerStore,
+		registry:        registry,
+		hub:             hub,
+		policy:          p,
+		runTimeout:      runTimeout,
+		maxConcurrent:   maxConcurrent,
+		slots:           make(chan struct{}, maxConcurrent),
+		active:          map[string]*activeRun{},
+		dailyTokenQuota: map[string]int64{},
+		fileStoreDir:    defaultFileStoreDir,
+		maxUploadBytes:  20 * 1024 * 1024,
 	}
 }
 
 func (s *Service) Submit(ctx context.Context, req SubmitRequest) (Run, error) {
 	if req.Backend == "" {
 		req.Backend = "codex"
+	}
+	if s.isEmergencyActive() {
+		return Run{}, ErrEmergencyStopActive
 	}
 	if req.Prompt == "" {
 		return Run{}, fmt.Errorf("prompt is required")
@@ -90,17 +109,26 @@ func (s *Service) Submit(ctx context.Context, req SubmitRequest) (Run, error) {
 		return Run{}, err
 	}
 	req.Options.SchemaVersion = negotiated
+	runID := uuid.NewString()
+	rewrittenPrompt, rewrittenContext, attachments, err := s.prepareAttachments(ctx, runID, req.WorkspacePath, req.Prompt, req.Context)
+	if err != nil {
+		return Run{}, err
+	}
+	req.Prompt = rewrittenPrompt
+	req.Context = rewrittenContext
 
 	now := time.Now().UTC()
 	r := Run{
-		ID:          uuid.NewString(),
+		ID:          runID,
 		WorkspaceID: req.WorkspaceID,
 		Workspace:   req.WorkspacePath,
 		Backend:     req.Backend,
 		Prompt:      req.Prompt,
 		Context:     req.Context,
 		Options:     req.Options,
+		Attachments: attachments,
 		Status:      StatusQueued,
+		Terminal:    deriveTerminalInfo(StatusQueued, ""),
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -142,6 +170,7 @@ func (s *Service) executeRun(r Run, drv driver.Driver) {
 		seq:           1,
 		status:        StatusQueued,
 		schemaVersion: r.Options.SchemaVersion,
+		backend:       r.Backend,
 	}
 	s.mu.Unlock()
 	defer func() {
@@ -176,7 +205,32 @@ func (s *Service) executeRun(r Run, drv driver.Driver) {
 	s.emit(runCtx, r.ID, r.Backend, "bridge", events.TypeStatus, map[string]any{"status": StatusStreaming})
 
 	sawDone := false
+	sawError := false
+	doneReceived := false
+	var doneErr error
 	for {
+		if doneReceived && stream.Events == nil {
+			if doneErr != nil {
+				st := s.currentStatus(r.ID)
+				if st != StatusCancelled && st != StatusCancelling {
+					s.setStatus(runCtx, r.ID, StatusFailed, doneErr.Error())
+					s.emit(runCtx, r.ID, r.Backend, "bridge", events.TypeError, map[string]any{"message": doneErr.Error()})
+				}
+				return
+			}
+			if !sawDone && s.currentStatus(r.ID) != StatusCancelled {
+				if s.currentStatus(r.ID) == StatusFailed || sawError {
+					if s.currentStatus(r.ID) != StatusFailed {
+						s.setStatus(runCtx, r.ID, StatusFailed, "run finished after error event")
+					}
+					return
+				}
+				s.setStatus(runCtx, r.ID, StatusCompleted, "")
+				s.emit(runCtx, r.ID, r.Backend, "bridge", events.TypeDone, map[string]any{"status": StatusCompleted})
+			}
+			return
+		}
+
 		select {
 		case <-runCtx.Done():
 			errText := runCtx.Err().Error()
@@ -202,30 +256,37 @@ func (s *Service) executeRun(r Run, drv driver.Driver) {
 				s.emit(runCtx, r.ID, r.Backend, "bridge", events.TypeError, map[string]any{"message": "invalid event contract", "detail": err.Error()})
 				continue
 			}
-			if ev.Type == events.TypeDone {
+
+			switch ev.Type {
+			case events.TypeError:
+				sawError = true
+				st := s.currentStatus(r.ID)
+				if st != StatusCancelled && st != StatusCancelling {
+					s.setStatus(runCtx, r.ID, StatusFailed, eventErrorMessage(ev.Payload))
+				}
+			case events.TypeDone:
 				sawDone = true
-				s.setStatus(runCtx, r.ID, StatusCompleted, "")
+				st := s.currentStatus(r.ID)
+				if st != StatusCancelled && st != StatusCancelling {
+					status, errText := terminalStatusFromDone(ev.Payload, sawError)
+					if !(st == StatusFailed && status == StatusFailed) {
+						s.setStatus(runCtx, r.ID, status, errText)
+					}
+				}
+				s.recordTokenUsage(runCtx, r.ID, r.Backend, ev.Payload)
 			}
+
 			_ = s.ledger.AppendEvent(runCtx, ev)
 			s.hub.Publish(ev)
-		case doneErr, ok := <-stream.Done:
+		case dErr, ok := <-stream.Done:
 			if !ok {
+				doneReceived = true
 				stream.Done = nil
 				continue
 			}
-			if doneErr != nil {
-				st := s.currentStatus(r.ID)
-				if st != StatusCancelled && st != StatusCancelling {
-					s.setStatus(runCtx, r.ID, StatusFailed, doneErr.Error())
-					s.emit(runCtx, r.ID, r.Backend, "bridge", events.TypeError, map[string]any{"message": doneErr.Error()})
-				}
-				return
-			}
-			if !sawDone && s.currentStatus(r.ID) != StatusCancelled {
-				s.setStatus(runCtx, r.ID, StatusCompleted, "")
-				s.emit(runCtx, r.ID, r.Backend, "bridge", events.TypeDone, map[string]any{"status": StatusCompleted})
-			}
-			return
+			doneReceived = true
+			doneErr = dErr
+			stream.Done = nil
 		}
 	}
 }
@@ -258,7 +319,7 @@ func (s *Service) GetRun(ctx context.Context, runID string) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
-	return Run{
+	out := Run{
 		ID:          rec.ID,
 		WorkspaceID: rec.WorkspaceID,
 		Workspace:   rec.Workspace,
@@ -273,9 +334,22 @@ func (s *Service) GetRun(ctx context.Context, runID string) (Run, error) {
 		},
 		Status:    rec.Status,
 		Error:     rec.Error,
+		Terminal:  deriveTerminalInfo(rec.Status, rec.Error),
 		CreatedAt: rec.CreatedAt,
 		UpdatedAt: rec.UpdatedAt,
-	}, nil
+	}
+	atts, err := s.ledger.ListRunAttachments(ctx, runID)
+	if err == nil && len(atts) > 0 {
+		out.Attachments = make([]RunAttachment, 0, len(atts))
+		for _, item := range atts {
+			out.Attachments = append(out.Attachments, RunAttachment{
+				FileID: item.FileID,
+				Alias:  item.Alias,
+				Path:   "./" + item.MaterializedPath,
+			})
+		}
+	}
+	return out, nil
 }
 
 func negotiateSchemaVersion(backend string, requested string, caps driver.CapabilitySet) (string, error) {
@@ -417,4 +491,57 @@ func (s *Service) runSchemaVersion(ctx context.Context, runID string) string {
 		return ""
 	}
 	return rec.Options.SchemaVersion
+}
+
+func terminalStatusFromDone(payload map[string]any, sawError bool) (string, string) {
+	raw := strings.ToLower(strings.TrimSpace(payloadString(payload, "status")))
+	switch raw {
+	case "":
+		if sawError {
+			return StatusFailed, "run contained error events"
+		}
+		return StatusCompleted, ""
+	case "completed", "complete", "success", "succeeded", "ok":
+		if sawError {
+			return StatusFailed, "run contained error events"
+		}
+		return StatusCompleted, ""
+	case "failed", "failure", "error":
+		return StatusFailed, eventErrorMessage(payload)
+	case "cancelled", "canceled":
+		return StatusCancelled, ""
+	default:
+		if sawError {
+			return StatusFailed, "run contained error events"
+		}
+		return StatusCompleted, ""
+	}
+}
+
+func eventErrorMessage(payload map[string]any) string {
+	msg := strings.TrimSpace(payloadString(payload, "message"))
+	if msg == "" {
+		msg = strings.TrimSpace(payloadString(payload, "result"))
+	}
+	if msg == "" {
+		msg = strings.TrimSpace(payloadString(payload, "error"))
+	}
+	if msg == "" {
+		msg = "backend reported error event"
+	}
+	return msg
+}
+
+func payloadString(payload map[string]any, key string) string {
+	if payload == nil {
+		return ""
+	}
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
 }

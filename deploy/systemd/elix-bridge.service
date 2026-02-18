@@ -1,0 +1,21 @@
+[Unit]
+Description=EchoHelix Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_GROUP__
+WorkingDirectory=__INSTALL_DIR__
+EnvironmentFile=-/etc/echohelix/elix-bridge.env
+ExecStart=__INSTALL_DIR__/bin/elix-bridge
+Restart=always
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=20
+LimitNOFILE=65535
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
