@@ -3,7 +3,9 @@ package session
 import "time"
 
 const (
-	BackendCodex = "codex"
+	BackendCodex  = "codex"
+	BackendGemini = "gemini"
+	BackendClaude = "claude"
 
 	StatusStarting = "starting"
 	StatusReady    = "ready"

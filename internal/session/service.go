@@ -17,9 +17,18 @@ import (
 type Config struct {
 	CodexBin       string
 	CodexArgs      []string
+	GeminiBin      string
+	GeminiArgs     []string
+	ClaudeBin      string
+	ClaudeArgs     []string
 	StartTimeout   time.Duration
 	RequestTimeout time.Duration
 	BlockedMethods []string
+}
+
+type backendLaunch struct {
+	bin  string
+	args []string
 }
 
 type Service struct {
@@ -27,6 +36,7 @@ type Service struct {
 	policy         *policy.Policy
 	hub            *Hub
 	blockedMethods map[string]struct{}
+	launchers      map[string]backendLaunch
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
@@ -50,8 +60,17 @@ type pendingRequestState struct {
 }
 
 func NewService(cfg Config, p *policy.Policy) *Service {
+	cfg.CodexBin = strings.TrimSpace(cfg.CodexBin)
 	if cfg.CodexBin == "" {
 		cfg.CodexBin = "codex"
+	}
+	cfg.GeminiBin = strings.TrimSpace(cfg.GeminiBin)
+	if cfg.GeminiBin == "" {
+		cfg.GeminiBin = "gemini"
+	}
+	cfg.ClaudeBin = strings.TrimSpace(cfg.ClaudeBin)
+	if cfg.ClaudeBin == "" {
+		cfg.ClaudeBin = "claude"
 	}
 	if cfg.StartTimeout <= 0 {
 		cfg.StartTimeout = 20 * time.Second
@@ -69,22 +88,38 @@ func NewService(cfg Config, p *policy.Policy) *Service {
 		blocked[normalizeMethod("initialize")] = struct{}{}
 		blocked[normalizeMethod("initialized")] = struct{}{}
 	}
+	launchers := map[string]backendLaunch{
+		BackendCodex: {
+			bin:  cfg.CodexBin,
+			args: buildCodexArgs(cfg.CodexArgs),
+		},
+		BackendGemini: {
+			bin:  cfg.GeminiBin,
+			args: append([]string(nil), cfg.GeminiArgs...),
+		},
+		BackendClaude: {
+			bin:  cfg.ClaudeBin,
+			args: append([]string(nil), cfg.ClaudeArgs...),
+		},
+	}
 	return &Service{
 		cfg:            cfg,
 		policy:         p,
 		hub:            NewHub(),
 		blockedMethods: blocked,
+		launchers:      launchers,
 		sessions:       map[string]*sessionState{},
 	}
 }
 
 func (s *Service) Create(ctx context.Context, req CreateRequest) (Session, error) {
-	backend := strings.TrimSpace(req.Backend)
+	backend := normalizeBackend(req.Backend)
 	if backend == "" {
 		backend = BackendCodex
 	}
-	if backend != BackendCodex {
-		return Session{}, fmt.Errorf("only codex backend supports interactive sessions now")
+	launcher, ok := s.launchers[backend]
+	if !ok {
+		return Session{}, fmt.Errorf("unsupported backend %q", req.Backend)
 	}
 	if err := s.policy.ValidateWorkspace(req.WorkspacePath); err != nil {
 		return Session{}, err
@@ -113,7 +148,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Session, error
 	s.sessions[sessionID] = state
 	s.mu.Unlock()
 
-	client, err := newAppServerClient(s.cfg.CodexBin, buildCodexArgs(s.cfg.CodexArgs), req.WorkspacePath)
+	client, err := newAppServerClient(launcher.bin, launcher.args, req.WorkspacePath)
 	if err != nil {
 		s.deleteSession(sessionID)
 		return Session{}, err
@@ -184,7 +219,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Session, error
 	if threadID == "" {
 		_ = client.Close()
 		s.deleteSession(sessionID)
-		return Session{}, fmt.Errorf("codex app-server %s returned empty thread id", threadMethod)
+		return Session{}, fmt.Errorf("%s app-server %s returned empty thread id", backend, threadMethod)
 	}
 
 	state.mu.Lock()
@@ -712,5 +747,9 @@ func toCodexSandbox(v string) string {
 }
 
 func normalizeMethod(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func normalizeBackend(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }

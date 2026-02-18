@@ -31,6 +31,8 @@ export GEMINI_CLI_BIN='gemini'
 export CLAUDE_CLI_BIN='claude'
 export CODEX_SESSION_ENABLED=1
 export CODEX_APP_SERVER_ARGS=''
+export GEMINI_SESSION_ARGS=''
+export CLAUDE_SESSION_ARGS=''
 export CODEX_SESSION_START_TIMEOUT_SECONDS=20
 export CODEX_SESSION_REQUEST_TIMEOUT_SECONDS=30
 export AUTH_ACCESS_TOKEN_TTL_SECONDS=900
@@ -150,15 +152,20 @@ export ANTHROPIC_BASE_URL='http://127.0.0.1:3000/'
 ./elix-bridge
 ```
 
-Codex interactive session mode (`codex app-server`) switches:
+Interactive session backend switches:
 
 1. `CODEX_SESSION_ENABLED=1|0` (default: `1`)
-2. `CODEX_APP_SERVER_ARGS` (default: empty; appended after `codex app-server --listen stdio://`)
-3. `CODEX_SESSION_START_TIMEOUT_SECONDS` (default: `20`)
-4. `CODEX_SESSION_REQUEST_TIMEOUT_SECONDS` (default: `30`)
-5. `BACKEND_CALL_READ_METHODS` (default: `status`)
-6. `BACKEND_CALL_CANCEL_METHODS` (default: `turn/interrupt`)
-7. `BACKEND_CALL_BLOCKED_METHODS` (default: `initialize,initialized`)
+2. `CODEX_CLI_BIN` (default: `codex`)
+3. `CODEX_APP_SERVER_ARGS` (default: empty; appended after `codex app-server --listen stdio://`)
+4. `GEMINI_CLI_BIN` (default: `gemini`)
+5. `GEMINI_SESSION_ARGS` (default: empty)
+6. `CLAUDE_CLI_BIN` (default: `claude`)
+7. `CLAUDE_SESSION_ARGS` (default: empty)
+8. `CODEX_SESSION_START_TIMEOUT_SECONDS` (default: `20`)
+9. `CODEX_SESSION_REQUEST_TIMEOUT_SECONDS` (default: `30`)
+10. `BACKEND_CALL_READ_METHODS` (default: `status`)
+11. `BACKEND_CALL_CANCEL_METHODS` (default: `turn/interrupt`)
+12. `BACKEND_CALL_BLOCKED_METHODS` (default: `initialize,initialized`)
 
 ## API
 

@@ -2,14 +2,25 @@ package session
 
 import (
 	"context"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"echohelix/internal/policy"
 )
+
+func TestSessionCreateSupportsGeminiBackend(t *testing.T) {
+	testSessionCreateSupportsBackend(t, "gemini")
+}
+
+func TestSessionCreateSupportsClaudeBackend(t *testing.T) {
+	testSessionCreateSupportsBackend(t, "claude")
+}
 
 func TestSessionCreateTurnAndApprovalFlow(t *testing.T) {
 	root := t.TempDir()
@@ -105,69 +116,149 @@ func TestSessionCreateTurnAndApprovalFlow(t *testing.T) {
 	}
 }
 
+func testSessionCreateSupportsBackend(t *testing.T, backend string) {
+	t.Helper()
+	root := t.TempDir()
+	workspace := filepath.Join(root, "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	fakeCodex := writeFakeCodex(t, root)
+	writeBinaryAlias(t, fakeCodex, filepath.Join(root, backendBinaryName(backend)))
+
+	pathSep := string(os.PathListSeparator)
+	t.Setenv("PATH", root+pathSep+os.Getenv("PATH"))
+
+	svc := NewService(Config{
+		CodexBin:       fakeCodex,
+		StartTimeout:   3 * time.Second,
+		RequestTimeout: 3 * time.Second,
+	}, policy.New([]string{root}))
+
+	sess, err := svc.Create(context.Background(), CreateRequest{WorkspacePath: workspace, Backend: backend})
+	if err != nil {
+		t.Fatalf("create session with backend %q: %v", backend, err)
+	}
+	if sess.Status != StatusReady {
+		t.Fatalf("expected status ready for backend %q, got %#v", backend, sess)
+	}
+	if sess.Backend != backend {
+		t.Fatalf("expected backend %q, got %#v", backend, sess)
+	}
+	if err := svc.Close(sess.ID); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+}
+
 func writeFakeCodex(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(dir, "fake-codex.sh")
-	script := `#!/usr/bin/env bash
-set -euo pipefail
-turn=0
-while IFS= read -r line; do
-  if [[ -z "$line" ]]; then
-    continue
-  fi
+	srcPath := filepath.Join(dir, "fake-codex.go")
+	source := `package main
 
-  if [[ "$line" == *'"method":"initialize"'* ]]; then
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    printf '{"id":"%s","result":{"userAgent":"fake"}}\n' "$id"
-    continue
-  fi
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+)
 
-  if [[ "$line" == *'"method":"thread/start"'* ]]; then
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    printf '{"id":"%s","result":{"thread":{"id":"thr_test"}}}\n' "$id"
-    printf '{"method":"thread/started","params":{"thread":{"id":"thr_test"}}}\n'
-    continue
-  fi
+func main() {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	turn := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		id := extractID(line)
+		switch {
+		case strings.Contains(line, "\"method\":\"initialize\""):
+			writef("{\"id\":\"%s\",\"result\":{\"userAgent\":\"fake\"}}", id)
+		case strings.Contains(line, "\"method\":\"thread/start\""):
+			writef("{\"id\":\"%s\",\"result\":{\"thread\":{\"id\":\"thr_test\"}}}", id)
+			writef("{\"method\":\"thread/started\",\"params\":{\"thread\":{\"id\":\"thr_test\"}}}")
+		case strings.Contains(line, "\"method\":\"status\""):
+			writef("{\"id\":\"%s\",\"result\":{\"state\":\"ready\",\"model\":\"gpt-5\"}}", id)
+		case strings.Contains(line, "\"method\":\"turn/start\""):
+			turn++
+			tid := fmt.Sprintf("turn_%d", turn)
+			rid := fmt.Sprintf("apr_%d", turn)
+			itemID := fmt.Sprintf("itm_%d", turn)
+			cmdID := fmt.Sprintf("cmd_%d", turn)
+			writef("{\"id\":\"%s\",\"result\":{\"turn\":{\"id\":\"%s\",\"status\":\"inProgress\",\"threadId\":\"thr_test\"}}}", id, tid)
+			writef("{\"method\":\"turn/started\",\"params\":{\"turn\":{\"id\":\"%s\",\"status\":\"inProgress\"}}}", tid)
+			writef("{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"thr_test\",\"turnId\":\"%s\",\"itemId\":\"%s\",\"delta\":\"ok\"}}", tid, itemID)
+			writef("{\"method\":\"item/commandExecution/requestApproval\",\"id\":\"%s\",\"params\":{\"threadId\":\"thr_test\",\"turnId\":\"%s\",\"itemId\":\"%s\",\"command\":\"echo hi\",\"cwd\":\"/tmp\"}}", rid, tid, cmdID)
+		case strings.Contains(line, "\"id\":\"apr_"):
+			writef("{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"commandExecution\",\"id\":\"cmd_1\",\"status\":\"completed\"}}}")
+			writef("{\"method\":\"turn/completed\",\"params\":{\"turn\":{\"id\":\"turn_1\",\"status\":\"completed\"}}}")
+		case strings.Contains(line, "\"method\":\"turn/interrupt\""):
+			writef("{\"id\":\"%s\",\"result\":{}}", id)
+			writef("{\"method\":\"turn/completed\",\"params\":{\"turn\":{\"id\":\"turn_1\",\"status\":\"interrupted\"}}}")
+		}
+	}
+}
 
-  if [[ "$line" == *'"method":"status"'* ]]; then
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    printf '{"id":"%s","result":{"state":"ready","model":"gpt-5"}}\n' "$id"
-    continue
-  fi
+func extractID(line string) string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		return ""
+	}
+	idRaw, ok := raw["id"]
+	if !ok {
+		return ""
+	}
+	var id any
+	if err := json.Unmarshal(idRaw, &id); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", id)
+}
 
-  if [[ "$line" == *'"method":"turn/start"'* ]]; then
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    turn=$((turn+1))
-    tid="turn_${turn}"
-    rid="apr_${turn}"
-    printf '{"id":"%s","result":{"turn":{"id":"%s","status":"inProgress","threadId":"thr_test"}}}\n' "$id" "$tid"
-    printf '{"method":"turn/started","params":{"turn":{"id":"%s","status":"inProgress"}}}\n' "$tid"
-    printf '{"method":"item/agentMessage/delta","params":{"threadId":"thr_test","turnId":"%s","itemId":"itm_%s","delta":"ok"}}\n' "$tid" "$turn"
-    printf '{"method":"item/commandExecution/requestApproval","id":"%s","params":{"threadId":"thr_test","turnId":"%s","itemId":"cmd_%s","command":"echo hi","cwd":"/tmp"}}\n' "$rid" "$tid" "$turn"
-    continue
-  fi
-
-  if [[ "$line" == *'"id":"apr_'* ]]; then
-    printf '{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"cmd_1","status":"completed"}}}\n'
-    printf '{"method":"turn/completed","params":{"turn":{"id":"turn_1","status":"completed"}}}\n'
-    continue
-  fi
-
-  if [[ "$line" == *'"method":"turn/interrupt"'* ]]; then
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    printf '{"id":"%s","result":{}}\n' "$id"
-    printf '{"method":"turn/completed","params":{"turn":{"id":"turn_1","status":"interrupted"}}}\n'
-    continue
-  fi
-done
+func writef(format string, args ...any) {
+	fmt.Printf(format+"\n", args...)
+}
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex script: %v", err)
+	if err := os.WriteFile(srcPath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write fake codex source: %v", err)
 	}
-	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatalf("chmod fake codex script: %v", err)
+	binPath := filepath.Join(dir, "fake-codex")
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
 	}
-	return path
+	cmd := exec.Command("go", "build", "-o", binPath, srcPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build fake codex: %v, output=%s", err, strings.TrimSpace(string(out)))
+	}
+	return binPath
+}
+
+func backendBinaryName(backend string) string {
+	name := strings.ToLower(strings.TrimSpace(backend))
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
+
+func writeBinaryAlias(t *testing.T, src, dst string) {
+	t.Helper()
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatalf("open source binary: %v", err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		t.Fatalf("open destination binary: %v", err)
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		t.Fatalf("copy binary alias: %v", err)
+	}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {

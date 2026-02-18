@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -103,7 +105,7 @@ func newTestServer(t *testing.T, securityCfg ...SecurityConfig) *httptest.Server
 	return ts
 }
 
-func newTestServerWithSession(t *testing.T, workspaceRoot string, codexBin string, securityCfg ...SecurityConfig) *httptest.Server {
+func newTestServerWithSession(t *testing.T, workspaceRoot string, sessionCfg session.Config, securityCfg ...SecurityConfig) *httptest.Server {
 	t.Helper()
 	store, err := ledger.Open(filepath.Join(t.TempDir(), "api.db"))
 	if err != nil {
@@ -127,11 +129,13 @@ func newTestServerWithSession(t *testing.T, workspaceRoot string, codexBin strin
 		4,
 	)
 	runSvc.SetFileStorage(filepath.Join(t.TempDir(), "files"), 2*1024*1024)
-	sessionSvc := session.NewService(session.Config{
-		CodexBin:       codexBin,
-		StartTimeout:   3 * time.Second,
-		RequestTimeout: 3 * time.Second,
-	}, runPolicy)
+	if sessionCfg.StartTimeout <= 0 {
+		sessionCfg.StartTimeout = 3 * time.Second
+	}
+	if sessionCfg.RequestTimeout <= 0 {
+		sessionCfg.RequestTimeout = 3 * time.Second
+	}
+	sessionSvc := session.NewService(sessionCfg, runPolicy)
 	t.Cleanup(func() {
 		_ = sessionSvc.Shutdown(context.Background())
 	})
@@ -145,6 +149,16 @@ func newTestServerWithSession(t *testing.T, workspaceRoot string, codexBin strin
 	ts := httptest.NewServer(s.httpServer.Handler)
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+func testSessionConfig(codexBin string) session.Config {
+	return session.Config{
+		CodexBin:       codexBin,
+		GeminiBin:      codexBin,
+		ClaudeBin:      codexBin,
+		StartTimeout:   3 * time.Second,
+		RequestTimeout: 3 * time.Second,
+	}
 }
 
 func TestPairAndSessionEndpoints(t *testing.T) {
@@ -545,6 +559,91 @@ func TestBackendCallScopeMapping(t *testing.T) {
 	}
 }
 
+func TestSessionCreateSupportsGeminiBackendAPI(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "ws-gemini")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	codexBin := writeFakeCodexForAPI(t, root)
+	ts := newTestServerWithSession(t, root, testSessionConfig(codexBin))
+
+	accessToken := issueAccessTokenForScopes(t, ts, []string{auth.ScopeRunsSubmit})
+	status, body := doJSON(t, ts, "POST", "/api/v3/sessions", accessToken, map[string]any{
+		"workspace_id":   "ws-gemini",
+		"workspace_path": workspace,
+		"backend":        "gemini",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create gemini session status=%d body=%s", status, string(body))
+	}
+	var resp struct {
+		SessionID string `json:"session_id"`
+		Backend   string `json:"backend"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode create session response: %v", err)
+	}
+	if resp.SessionID == "" || resp.Backend != "gemini" || resp.Status != session.StatusReady {
+		t.Fatalf("unexpected session response: %#v", resp)
+	}
+}
+
+func TestSessionCreateSupportsClaudeBackendAPI(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "ws-claude")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	codexBin := writeFakeCodexForAPI(t, root)
+	ts := newTestServerWithSession(t, root, testSessionConfig(codexBin))
+
+	accessToken := issueAccessTokenForScopes(t, ts, []string{auth.ScopeRunsSubmit})
+	status, body := doJSON(t, ts, "POST", "/api/v3/sessions", accessToken, map[string]any{
+		"workspace_id":   "ws-claude",
+		"workspace_path": workspace,
+		"backend":        "claude",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create claude session status=%d body=%s", status, string(body))
+	}
+	var resp struct {
+		SessionID string `json:"session_id"`
+		Backend   string `json:"backend"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode create session response: %v", err)
+	}
+	if resp.SessionID == "" || resp.Backend != "claude" || resp.Status != session.StatusReady {
+		t.Fatalf("unexpected session response: %#v", resp)
+	}
+}
+
+func TestSessionCreateRejectsUnknownBackendAPI(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "ws-unknown")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	codexBin := writeFakeCodexForAPI(t, root)
+	ts := newTestServerWithSession(t, root, testSessionConfig(codexBin))
+
+	accessToken := issueAccessTokenForScopes(t, ts, []string{auth.ScopeRunsSubmit})
+	status, body := doJSON(t, ts, "POST", "/api/v3/sessions", accessToken, map[string]any{
+		"workspace_id":   "ws-unknown",
+		"workspace_path": workspace,
+		"backend":        "not-supported",
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("create unknown backend session status=%d body=%s", status, string(body))
+	}
+	if !strings.Contains(string(body), "unsupported backend") {
+		t.Fatalf("expected unsupported backend error, got %s", string(body))
+	}
+}
+
 func TestSessionBackendCallPassthrough(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "ws")
@@ -552,7 +651,7 @@ func TestSessionBackendCallPassthrough(t *testing.T) {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
 	codexBin := writeFakeCodexForAPI(t, root)
-	ts := newTestServerWithSession(t, root, codexBin)
+	ts := newTestServerWithSession(t, root, testSessionConfig(codexBin))
 
 	accessToken := issueAccessTokenForScopes(t, ts, []string{auth.ScopeRunsSubmit, auth.ScopeRunsRead, auth.ScopeRunsCancel})
 	createStatus, createBody := doJSON(t, ts, "POST", "/api/v3/sessions", accessToken, map[string]any{
@@ -658,41 +757,71 @@ func issueAccessTokenForScopes(t *testing.T, ts *httptest.Server, scopes []strin
 
 func writeFakeCodexForAPI(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(dir, "fake-codex-api.sh")
-	script := `#!/usr/bin/env bash
-set -euo pipefail
-while IFS= read -r line; do
-  if [[ -z "$line" ]]; then
-    continue
-  fi
+	srcPath := filepath.Join(dir, "fake-codex-api.go")
+	source := `package main
 
-  if [[ "$line" == *'"method":"initialize"'* ]]; then
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    printf '{"id":"%s","result":{"userAgent":"fake-api"}}\n' "$id"
-    continue
-  fi
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+)
 
-  if [[ "$line" == *'"method":"thread/start"'* ]]; then
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    printf '{"id":"%s","result":{"thread":{"id":"thr_api"}}}\n' "$id"
-    printf '{"method":"thread/started","params":{"thread":{"id":"thr_api"}}}\n'
-    continue
-  fi
+func main() {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		id := extractID(line)
+		switch {
+		case strings.Contains(line, "\"method\":\"initialize\""):
+			writef("{\"id\":\"%s\",\"result\":{\"userAgent\":\"fake-api\"}}", id)
+		case strings.Contains(line, "\"method\":\"thread/start\""):
+			writef("{\"id\":\"%s\",\"result\":{\"thread\":{\"id\":\"thr_api\"}}}", id)
+			writef("{\"method\":\"thread/started\",\"params\":{\"thread\":{\"id\":\"thr_api\"}}}")
+		case strings.Contains(line, "\"method\":\"status\""):
+			writef("{\"id\":\"%s\",\"result\":{\"state\":\"ready\",\"source\":\"fake-api\"}}", id)
+		}
+	}
+}
 
-  if [[ "$line" == *'"method":"status"'* ]]; then
-    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    printf '{"id":"%s","result":{"state":"ready","source":"fake-api"}}\n' "$id"
-    continue
-  fi
-done
+func extractID(line string) string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		return ""
+	}
+	idRaw, ok := raw["id"]
+	if !ok {
+		return ""
+	}
+	var id any
+	if err := json.Unmarshal(idRaw, &id); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", id)
+}
+
+func writef(format string, args ...any) {
+	fmt.Printf(format+"\n", args...)
+}
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex script: %v", err)
+	if err := os.WriteFile(srcPath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write fake codex source: %v", err)
 	}
-	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatalf("chmod fake codex script: %v", err)
+	binPath := filepath.Join(dir, "fake-codex-api")
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
 	}
-	return path
+	cmd := exec.Command("go", "build", "-o", binPath, srcPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build fake codex api: %v, output=%s", err, strings.TrimSpace(string(out)))
+	}
+	return binPath
 }
 
 func doJSON(t *testing.T, ts *httptest.Server, method, path, bearer string, payload any) (int, []byte) {

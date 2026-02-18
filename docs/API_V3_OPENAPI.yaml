@@ -445,7 +445,7 @@ paths:
       summary: Get backend passthrough status
       description: |
         Requires session scope `runs:read`.
-        For Codex sessions, this forwards `status` to the active app-server and returns its result payload.
+        For interactive sessions, this forwards `status` to the selected backend and returns its result payload.
       parameters:
         - in: path
           name: session_id
@@ -473,7 +473,7 @@ paths:
       description: |
         Scope depends on method:
         `status` -> `runs:read`; `turn/interrupt` -> `runs:cancel`; others -> `runs:submit`.
-        For Codex sessions, this forwards arbitrary app-server RPC `method` and `params`.
+        For interactive sessions, this forwards arbitrary backend RPC `method` and `params`.
       parameters:
         - in: path
           name: session_id
@@ -916,11 +916,11 @@ components:
         workspace_path: { type: string }
         backend:
           type: string
-          enum: [codex]
+          enum: [codex, gemini, claude]
           default: codex
         thread_id:
           type: string
-          description: Provide to resume existing Codex thread.
+          description: Provide to resume an existing backend thread/session when supported.
         model: { type: string }
         approval_policy: { type: string }
         sandbox:
@@ -937,7 +937,7 @@ components:
           description: Required when `input` is empty.
         input:
           type: array
-          description: Raw Codex app-server turn input payload.
+          description: Raw backend turn input payload.
           items:
             type: object
             additionalProperties: true

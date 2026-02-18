@@ -33,6 +33,10 @@ type Config struct {
 	CodexSessionEnabled            bool
 	CodexAppServerBin              string
 	CodexAppServerArgs             []string
+	GeminiSessionBin               string
+	GeminiSessionArgs              []string
+	ClaudeSessionBin               string
+	ClaudeSessionArgs              []string
 	CodexSessionStartTimeout       time.Duration
 	CodexSessionRequestTimeout     time.Duration
 	BackendCallReadMethods         []string
@@ -92,6 +96,10 @@ func Load() Config {
 		CodexSessionEnabled:            envBool("CODEX_SESSION_ENABLED", true),
 		CodexAppServerBin:              codexBin,
 		CodexAppServerArgs:             strings.Fields(env("CODEX_APP_SERVER_ARGS", "")),
+		GeminiSessionBin:               env("GEMINI_CLI_BIN", "gemini"),
+		GeminiSessionArgs:              strings.Fields(env("GEMINI_SESSION_ARGS", "")),
+		ClaudeSessionBin:               env("CLAUDE_CLI_BIN", "claude"),
+		ClaudeSessionArgs:              strings.Fields(env("CLAUDE_SESSION_ARGS", "")),
 		CodexSessionStartTimeout:       time.Duration(codexSessionStartTimeoutSec) * time.Second,
 		CodexSessionRequestTimeout:     time.Duration(codexSessionRequestTimeoutSec) * time.Second,
 		BackendCallReadMethods:         splitCSV(env("BACKEND_CALL_READ_METHODS", "status")),
