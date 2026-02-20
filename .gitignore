@@ -10,3 +10,6 @@ bridge.db
 *.tar.gz
 .env
 .env.*
+.research/
+.vscode/
+Elix-Web/

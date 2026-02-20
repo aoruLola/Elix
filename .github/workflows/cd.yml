@@ -1,0 +1,48 @@
+name: CD
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify code quality
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: Build release archive
+        run: |
+          mkdir -p dist
+          tag_name="${GITHUB_REF_NAME}"
+          if [ -z "$tag_name" ]; then
+            tag_name="manual-${GITHUB_RUN_NUMBER}"
+          fi
+          git archive --format=tar.gz --output "dist/elix-${tag_name}.tar.gz" HEAD
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}
+          name: ${{ format('Release {0}', github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number)) }}
+          generate_release_notes: true
+          files: dist/*.tar.gz
+

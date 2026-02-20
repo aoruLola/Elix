@@ -58,6 +58,10 @@ func (s *Supervisor) EnsureRunning(_ context.Context) error {
 	go s.waitProcess(cmd)
 
 	time.Sleep(250 * time.Millisecond)
+	if cmd.ProcessState != nil {
+		s.cmd = nil
+		return fmt.Errorf("adapter process exited early: %s", cmd.ProcessState.String())
+	}
 	return nil
 }
 
@@ -67,7 +71,15 @@ func (s *Supervisor) Stop() error {
 	if s.cmd == nil || s.cmd.Process == nil {
 		return nil
 	}
-	return s.cmd.Process.Kill()
+	cmd := s.cmd
+	s.cmd = nil
+	if err := cmd.Process.Kill(); err != nil {
+		if err.Error() == "os: process already finished" {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Supervisor) waitProcess(cmd *exec.Cmd) {
@@ -76,6 +88,11 @@ func (s *Supervisor) waitProcess(cmd *exec.Cmd) {
 	} else {
 		log.Printf("adapter exited")
 	}
+	s.mu.Lock()
+	if s.cmd == cmd {
+		s.cmd = nil
+	}
+	s.mu.Unlock()
 }
 
 func scan(r io.Reader, prefix string) {
