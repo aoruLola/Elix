@@ -15,15 +15,17 @@ import (
 )
 
 type Config struct {
-	CodexBin       string
-	CodexArgs      []string
-	GeminiBin      string
-	GeminiArgs     []string
-	ClaudeBin      string
-	ClaudeArgs     []string
-	StartTimeout   time.Duration
-	RequestTimeout time.Duration
-	BlockedMethods []string
+	CodexBin             string
+	CodexArgs            []string
+	GeminiBin            string
+	GeminiArgs           []string
+	ClaudeBin            string
+	ClaudeArgs           []string
+	StartTimeout         time.Duration
+	RequestTimeout       time.Duration
+	SessionRetention     time.Duration
+	SessionCleanupPeriod time.Duration
+	BlockedMethods       []string
 }
 
 type backendLaunch struct {
@@ -37,6 +39,7 @@ type Service struct {
 	hub            *Hub
 	blockedMethods map[string]struct{}
 	launchers      map[string]backendLaunch
+	lastCleanup    time.Time
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
@@ -78,6 +81,12 @@ func NewService(cfg Config, p *policy.Policy) *Service {
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = 30 * time.Second
 	}
+	if cfg.SessionRetention <= 0 {
+		cfg.SessionRetention = 6 * time.Hour
+	}
+	if cfg.SessionCleanupPeriod <= 0 {
+		cfg.SessionCleanupPeriod = 5 * time.Minute
+	}
 	blocked := make(map[string]struct{}, len(cfg.BlockedMethods))
 	for _, m := range cfg.BlockedMethods {
 		if key := normalizeMethod(m); key != "" {
@@ -109,10 +118,12 @@ func NewService(cfg Config, p *policy.Policy) *Service {
 		blockedMethods: blocked,
 		launchers:      launchers,
 		sessions:       map[string]*sessionState{},
+		lastCleanup:    time.Now().UTC(),
 	}
 }
 
 func (s *Service) Create(ctx context.Context, req CreateRequest) (Session, error) {
+	s.maybeCleanup(time.Now().UTC())
 	backend := normalizeBackend(req.Backend)
 	if backend == "" {
 		backend = BackendCodex
@@ -234,6 +245,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Session, error
 }
 
 func (s *Service) List() []Session {
+	s.maybeCleanup(time.Now().UTC())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Session, 0, len(s.sessions))
@@ -697,6 +709,7 @@ func (s *Service) publish(st *sessionState, typ, method string, payload map[stri
 }
 
 func (s *Service) state(sessionID string) (*sessionState, error) {
+	s.maybeCleanup(time.Now().UTC())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.sessions[sessionID]
@@ -710,6 +723,43 @@ func (s *Service) deleteSession(sessionID string) {
 	s.mu.Lock()
 	delete(s.sessions, sessionID)
 	s.mu.Unlock()
+}
+
+func (s *Service) maybeCleanup(now time.Time) {
+	if s.cfg.SessionRetention <= 0 {
+		return
+	}
+
+	s.mu.Lock()
+	if !s.lastCleanup.IsZero() && now.Sub(s.lastCleanup) < s.cfg.SessionCleanupPeriod {
+		s.mu.Unlock()
+		return
+	}
+	s.lastCleanup = now
+	cutoff := now.Add(-s.cfg.SessionRetention)
+	for id, st := range s.sessions {
+		st.mu.Lock()
+		status := st.session.Status
+		updatedAt := st.session.UpdatedAt
+		st.mu.Unlock()
+		if !isTerminalSessionStatus(status) {
+			continue
+		}
+		if updatedAt.After(cutoff) {
+			continue
+		}
+		delete(s.sessions, id)
+	}
+	s.mu.Unlock()
+}
+
+func isTerminalSessionStatus(status string) bool {
+	switch status {
+	case StatusClosed, StatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func buildCodexArgs(extra []string) []string {
@@ -734,13 +784,13 @@ func requestKind(method string) string {
 }
 
 func toCodexSandbox(v string) string {
-	switch v {
-	case "read-only":
-		return "readOnly"
-	case "workspace-write":
-		return "workspaceWrite"
-	case "danger-full-access":
-		return "dangerFullAccess"
+	switch strings.TrimSpace(v) {
+	case "read-only", "readOnly":
+		return "read-only"
+	case "workspace-write", "workspaceWrite":
+		return "workspace-write"
+	case "danger-full-access", "dangerFullAccess":
+		return "danger-full-access"
 	default:
 		return v
 	}

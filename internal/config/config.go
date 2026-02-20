@@ -25,6 +25,7 @@ type Config struct {
 	AuthFailAlertWindow            time.Duration
 	PairCompleteFailAlertThreshold int
 	PairCompleteFailAlertWindow    time.Duration
+	TrustedProxyCIDRs              []string
 	MaxOutputBytes                 int64
 	MaxConcurrentRun               int
 	DailyTokenQuota                map[string]int64
@@ -39,6 +40,8 @@ type Config struct {
 	ClaudeSessionArgs              []string
 	CodexSessionStartTimeout       time.Duration
 	CodexSessionRequestTimeout     time.Duration
+	SessionRetention               time.Duration
+	SessionCleanupPeriod           time.Duration
 	BackendCallReadMethods         []string
 	BackendCallCancelMethods       []string
 	BackendCallBlockedMethods      []string
@@ -69,6 +72,8 @@ func Load() Config {
 	pairCompleteFailAlertWindowSec := envInt("AUTH_PAIR_COMPLETE_FAIL_ALERT_WINDOW_SECONDS", 120)
 	codexSessionStartTimeoutSec := envInt("CODEX_SESSION_START_TIMEOUT_SECONDS", 20)
 	codexSessionRequestTimeoutSec := envInt("CODEX_SESSION_REQUEST_TIMEOUT_SECONDS", 30)
+	sessionRetentionSec := envInt("SESSION_RETENTION_SECONDS", 21600)
+	sessionCleanupSec := envInt("SESSION_CLEANUP_INTERVAL_SECONDS", 300)
 	baseDir := executableDir()
 	codexBin := env("CODEX_CLI_BIN", "codex")
 	return Config{
@@ -88,6 +93,7 @@ func Load() Config {
 		AuthFailAlertWindow:            time.Duration(authFailAlertWindowSec) * time.Second,
 		PairCompleteFailAlertThreshold: pairCompleteFailAlertThreshold,
 		PairCompleteFailAlertWindow:    time.Duration(pairCompleteFailAlertWindowSec) * time.Second,
+		TrustedProxyCIDRs:              splitCSV(env("TRUSTED_PROXY_CIDRS", "")),
 		MaxOutputBytes:                 int64(envInt("RUN_MAX_OUTPUT_BYTES", 4*1024*1024)),
 		MaxConcurrentRun:               envInt("MAX_CONCURRENT_RUNS", 32),
 		DailyTokenQuota:                parseKVInt64CSV(env("DAILY_TOKEN_QUOTA", "")),
@@ -102,6 +108,8 @@ func Load() Config {
 		ClaudeSessionArgs:              strings.Fields(env("CLAUDE_SESSION_ARGS", "")),
 		CodexSessionStartTimeout:       time.Duration(codexSessionStartTimeoutSec) * time.Second,
 		CodexSessionRequestTimeout:     time.Duration(codexSessionRequestTimeoutSec) * time.Second,
+		SessionRetention:               time.Duration(sessionRetentionSec) * time.Second,
+		SessionCleanupPeriod:           time.Duration(sessionCleanupSec) * time.Second,
 		BackendCallReadMethods:         splitCSV(env("BACKEND_CALL_READ_METHODS", "status")),
 		BackendCallCancelMethods:       splitCSV(env("BACKEND_CALL_CANCEL_METHODS", "turn/interrupt")),
 		BackendCallBlockedMethods:      splitCSV(env("BACKEND_CALL_BLOCKED_METHODS", "initialize,initialized")),

@@ -160,6 +160,11 @@ func (s *Service) executeRun(r Run, drv driver.Driver) {
 	s.slots <- struct{}{}
 	defer func() { <-s.slots }()
 
+	// Run may be cancelled before worker gets a slot.
+	if rec, err := s.ledger.GetRun(context.Background(), r.ID); err == nil && isTerminalStatus(rec.Status) {
+		return
+	}
+
 	runCtx, cancel := context.WithTimeout(context.Background(), s.runTimeout)
 	defer cancel()
 
@@ -218,7 +223,11 @@ func (s *Service) executeRun(r Run, drv driver.Driver) {
 				}
 				return
 			}
-			if !sawDone && s.currentStatus(r.ID) != StatusCancelled {
+			if !sawDone {
+				st := s.currentStatus(r.ID)
+				if st == StatusCancelled || st == StatusCancelling {
+					return
+				}
 				if s.currentStatus(r.ID) == StatusFailed || sawError {
 					if s.currentStatus(r.ID) != StatusFailed {
 						s.setStatus(runCtx, r.ID, StatusFailed, "run finished after error event")
@@ -292,25 +301,66 @@ func (s *Service) executeRun(r Run, drv driver.Driver) {
 }
 
 func (s *Service) Cancel(ctx context.Context, runID string) error {
-	rec, err := s.ledger.GetRun(ctx, runID)
+	storageCtx := context.Background()
+	rec, err := s.ledger.GetRun(storageCtx, runID)
 	if err != nil {
 		return err
 	}
-	s.setStatus(ctx, runID, StatusCancelling, "")
-	s.emit(ctx, runID, rec.Backend, "bridge", events.TypeStatus, map[string]any{"status": StatusCancelling})
+	if isTerminalStatus(rec.Status) {
+		if rec.Status == StatusCancelled {
+			return nil
+		}
+		return fmt.Errorf("run is already %s", rec.Status)
+	}
 
 	s.mu.Lock()
 	ar := s.active[runID]
-	s.mu.Unlock()
 	if ar != nil {
-		if err := ar.driver.Cancel(ctx, runID); err != nil {
-			log.Printf("cancel driver run=%s: %v", runID, err)
+		if isTerminalStatus(ar.status) {
+			status := ar.status
+			s.mu.Unlock()
+			if status == StatusCancelled {
+				return nil
+			}
+			return fmt.Errorf("run is already %s", status)
 		}
-		ar.cancel()
+	}
+	s.mu.Unlock()
+
+	if ar == nil {
+		updated, err := s.setStatusIfNotTerminal(storageCtx, runID, StatusCancelled, "")
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return s.cancelTerminalConflict(runID)
+		}
+		// Run can still be queued (not active yet); mark cancelled directly.
+		s.emit(storageCtx, runID, rec.Backend, "bridge", events.TypeStatus, map[string]any{"status": StatusCancelled})
+		return nil
 	}
 
-	s.setStatus(ctx, runID, StatusCancelled, "")
-	s.emit(ctx, runID, rec.Backend, "bridge", events.TypeStatus, map[string]any{"status": StatusCancelled})
+	updated, err := s.setStatusIfNotTerminal(storageCtx, runID, StatusCancelling, "")
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return s.cancelTerminalConflict(runID)
+	}
+	s.emit(storageCtx, runID, rec.Backend, "bridge", events.TypeStatus, map[string]any{"status": StatusCancelling})
+	if err := ar.driver.Cancel(ctx, runID); err != nil {
+		log.Printf("cancel driver run=%s: %v", runID, err)
+	}
+	ar.cancel()
+
+	updated, err = s.setStatusIfNotTerminal(storageCtx, runID, StatusCancelled, "")
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return s.cancelTerminalConflict(runID)
+	}
+	s.emit(storageCtx, runID, rec.Backend, "bridge", events.TypeStatus, map[string]any{"status": StatusCancelled})
 	return nil
 }
 
@@ -412,11 +462,41 @@ func (s *Service) ListBackends(ctx context.Context) ([]map[string]any, error) {
 
 func (s *Service) setStatus(ctx context.Context, runID, status, errText string) {
 	_ = s.ledger.UpdateRunStatus(ctx, runID, status, errText)
+	s.setActiveStatus(runID, status)
+}
+
+func (s *Service) setStatusIfNotTerminal(ctx context.Context, runID, status, errText string) (bool, error) {
+	updated, err := s.ledger.UpdateRunStatusIfNotTerminal(ctx, runID, status, errText)
+	if err != nil {
+		return false, err
+	}
+	if updated {
+		s.setActiveStatus(runID, status)
+	}
+	return updated, nil
+}
+
+func (s *Service) setActiveStatus(runID, status string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if ar := s.active[runID]; ar != nil {
 		ar.status = status
 	}
+	s.mu.Unlock()
+}
+
+func (s *Service) cancelTerminalConflict(runID string) error {
+	rec, err := s.ledger.GetRun(context.Background(), runID)
+	if err != nil {
+		return err
+	}
+	s.setActiveStatus(runID, rec.Status)
+	if rec.Status == StatusCancelled {
+		return nil
+	}
+	if isTerminalStatus(rec.Status) {
+		return fmt.Errorf("run is already %s", rec.Status)
+	}
+	return fmt.Errorf("run status changed to %s while cancelling", rec.Status)
 }
 
 func (s *Service) currentStatus(runID string) string {
@@ -515,6 +595,15 @@ func terminalStatusFromDone(payload map[string]any, sawError bool) (string, stri
 			return StatusFailed, "run contained error events"
 		}
 		return StatusCompleted, ""
+	}
+}
+
+func isTerminalStatus(status string) bool {
+	switch status {
+	case StatusCancelled, StatusCompleted, StatusFailed:
+		return true
+	default:
+		return false
 	}
 }
 

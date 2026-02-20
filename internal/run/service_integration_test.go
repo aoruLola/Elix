@@ -55,6 +55,7 @@ func (d *fakeDriver) StartRun(ctx context.Context, req driver.StartRequest) (*dr
 	d.lastStart = req
 	script := append([]events.Event(nil), d.script...)
 	doneErr := d.doneErr
+	block := d.block
 	d.cancelMu.Unlock()
 
 	eventsCh := make(chan events.Event, 8)
@@ -74,7 +75,7 @@ func (d *fakeDriver) StartRun(ctx context.Context, req driver.StartRequest) (*dr
 			d.cancelMu.Unlock()
 		}()
 
-		if d.block {
+		if block {
 			select {
 			case <-ctx.Done():
 				doneCh <- ctx.Err()
@@ -104,6 +105,12 @@ func (d *fakeDriver) Cancel(_ context.Context, runID string) error {
 		close(ch)
 	}
 	return nil
+}
+
+func (d *fakeDriver) SetBlock(block bool) {
+	d.cancelMu.Lock()
+	d.block = block
+	d.cancelMu.Unlock()
 }
 
 func (d *fakeDriver) Health(context.Context) (driver.Health, error) {
@@ -233,6 +240,55 @@ func TestCancel(t *testing.T) {
 	final := waitStatus(t, svc, r.ID, StatusCancelled)
 	if !final.Terminal.IsTerminal || final.Terminal.Outcome != StatusCancelled || final.Terminal.ReasonCode != "cancelled_by_user" {
 		t.Fatalf("unexpected cancelled terminal info: %#v", final.Terminal)
+	}
+}
+
+func TestCancelAfterCompletedKeepsTerminalStatus(t *testing.T) {
+	svc := setupService(t, newFakeDriver("codex", false))
+	r, err := svc.Submit(context.Background(), SubmitRequest{
+		WorkspaceID:   "ws-1",
+		WorkspacePath: "/tmp",
+		Backend:       "codex",
+		Prompt:        "done first",
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	waitStatus(t, svc, r.ID, StatusCompleted)
+
+	if err := svc.Cancel(context.Background(), r.ID); err == nil {
+		t.Fatalf("expected cancel completed run to fail")
+	}
+	final, err := svc.GetRun(context.Background(), r.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if final.Status != StatusCompleted {
+		t.Fatalf("cancel must not override completed status, got %s", final.Status)
+	}
+}
+
+func TestCancelIgnoresCallerContextCancellation(t *testing.T) {
+	svc := setupService(t, newFakeDriver("codex", true))
+	r, err := svc.Submit(context.Background(), SubmitRequest{
+		WorkspaceID:   "ws-1",
+		WorkspacePath: "/tmp",
+		Backend:       "codex",
+		Prompt:        "cancel context",
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	waitStatus(t, svc, r.ID, StatusRunning, StatusStreaming)
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := svc.Cancel(cancelCtx, r.ID); err != nil {
+		t.Fatalf("cancel with canceled context: %v", err)
+	}
+	final := waitStatus(t, svc, r.ID, StatusCancelled)
+	if !final.Terminal.IsTerminal || final.Terminal.Outcome != StatusCancelled {
+		t.Fatalf("unexpected terminal info after cancel: %#v", final.Terminal)
 	}
 }
 
@@ -587,7 +643,7 @@ func TestEmergencyStopAndResume(t *testing.T) {
 		t.Fatalf("expected emergency state inactive after resume")
 	}
 
-	drv.block = false
+	drv.SetBlock(false)
 	r2, err := svc.Submit(context.Background(), SubmitRequest{
 		WorkspaceID:   "ws-resume",
 		WorkspacePath: "/tmp",

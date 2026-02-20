@@ -1,9 +1,10 @@
 package config
 
 import (
-	"reflect"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 )
 
 func TestEnvPathResolvesRelativeToBaseDir(t *testing.T) {
@@ -84,5 +85,27 @@ func TestLoadSessionBackendEnvOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.ClaudeSessionArgs, []string{"--print", "--verbose"}) {
 		t.Fatalf("unexpected ClaudeSessionArgs: %#v", cfg.ClaudeSessionArgs)
+	}
+}
+
+func TestLoadSessionCleanupDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("SESSION_RETENTION_SECONDS", "")
+	t.Setenv("SESSION_CLEANUP_INTERVAL_SECONDS", "")
+	cfg := Load()
+	if cfg.SessionRetention != 6*time.Hour {
+		t.Fatalf("expected default SessionRetention=6h, got %s", cfg.SessionRetention)
+	}
+	if cfg.SessionCleanupPeriod != 5*time.Minute {
+		t.Fatalf("expected default SessionCleanupPeriod=5m, got %s", cfg.SessionCleanupPeriod)
+	}
+
+	t.Setenv("SESSION_RETENTION_SECONDS", "120")
+	t.Setenv("SESSION_CLEANUP_INTERVAL_SECONDS", "7")
+	cfg = Load()
+	if cfg.SessionRetention != 120*time.Second {
+		t.Fatalf("expected SessionRetention=120s, got %s", cfg.SessionRetention)
+	}
+	if cfg.SessionCleanupPeriod != 7*time.Second {
+		t.Fatalf("expected SessionCleanupPeriod=7s, got %s", cfg.SessionCleanupPeriod)
 	}
 }

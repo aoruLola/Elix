@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -76,5 +77,63 @@ CREATE TABLE events (
 		if !has[col] {
 			t.Fatalf("expected migrated column %s", col)
 		}
+	}
+}
+
+func TestUpdateRunStatusIfNotTerminal(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "status.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := store.CreateRun(context.Background(), RunRecord{
+		ID:          "run-1",
+		WorkspaceID: "ws-1",
+		Workspace:   "/tmp",
+		Backend:     "codex",
+		Prompt:      "hello",
+		Status:      "queued",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	updated, err := store.UpdateRunStatusIfNotTerminal(context.Background(), "run-1", "running", "")
+	if err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	if !updated {
+		t.Fatalf("expected queued->running update")
+	}
+	rec, err := store.GetRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("get run after running: %v", err)
+	}
+	if rec.Status != "running" {
+		t.Fatalf("expected running, got %s", rec.Status)
+	}
+
+	if err := store.UpdateRunStatus(context.Background(), "run-1", "completed", ""); err != nil {
+		t.Fatalf("set completed: %v", err)
+	}
+	updated, err = store.UpdateRunStatusIfNotTerminal(context.Background(), "run-1", "cancelled", "")
+	if err != nil {
+		t.Fatalf("attempt downgrade terminal: %v", err)
+	}
+	if updated {
+		t.Fatalf("terminal status must not be overwritten")
+	}
+	rec, err = store.GetRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("get run after downgrade attempt: %v", err)
+	}
+	if rec.Status != "completed" {
+		t.Fatalf("expected completed to remain, got %s", rec.Status)
 	}
 }

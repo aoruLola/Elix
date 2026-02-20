@@ -35,6 +35,8 @@ export GEMINI_SESSION_ARGS=''
 export CLAUDE_SESSION_ARGS=''
 export CODEX_SESSION_START_TIMEOUT_SECONDS=20
 export CODEX_SESSION_REQUEST_TIMEOUT_SECONDS=30
+export SESSION_RETENTION_SECONDS=21600
+export SESSION_CLEANUP_INTERVAL_SECONDS=300
 export AUTH_ACCESS_TOKEN_TTL_SECONDS=900
 export AUTH_REFRESH_TOKEN_TTL_SECONDS=86400
 export AUTH_PAIR_CODE_TTL_SECONDS=60
@@ -46,6 +48,9 @@ export AUTH_AUTH_FAIL_ALERT_THRESHOLD=8
 export AUTH_AUTH_FAIL_ALERT_WINDOW_SECONDS=120
 export AUTH_PAIR_COMPLETE_FAIL_ALERT_THRESHOLD=5
 export AUTH_PAIR_COMPLETE_FAIL_ALERT_WINDOW_SECONDS=120
+# Optional: trust X-Forwarded-For only from these reverse-proxy CIDRs.
+# Empty means ignore X-Forwarded-For and use direct peer IP.
+export TRUSTED_PROXY_CIDRS='127.0.0.1/32,::1/128'
 export BRIDGE_FILE_STORE_DIR='./files'
 export BRIDGE_MAX_UPLOAD_BYTES=20971520
 ./elix-bridge
@@ -102,6 +107,84 @@ Built-in web console:
 
 1. start bridge (`elix-bridge` service or local binary)
 2. open `http://127.0.0.1:8765/ui/`
+
+## Official Frontend
+
+`ElixClient` is the official product frontend for EchoHelix.
+
+1. local path (this machine): `/home/carp/ElixClient`
+2. repo: `https://github.com/aoruLola/ElixClient.git`
+3. run:
+
+```bash
+cd /home/carp/ElixClient
+npm ci
+npm run dev
+```
+
+The old `echohelix/frontend` implementation has been removed from this repo.
+
+## Jira Minimal Project Setup (Personal Team)
+
+Use `scripts/setup_jira_minimal.sh` to connect Jira and apply a simple hierarchy:
+
+1. Epic (project)
+2. Task (work item)
+3. Sub-task (optional daily breakdown)
+
+It will:
+
+1. verify Jira auth
+2. create/reuse one Jira Software project (kanban template)
+3. create/reuse a board filter and kanban board (board focuses on Epic+Task by default)
+4. verify Epic/Task/Sub-task issue types are available
+5. optionally initialize Epics
+
+Example:
+
+```bash
+export JIRA_BASE_URL='https://your-domain.atlassian.net'
+export JIRA_EMAIL='you@example.com'
+export JIRA_API_TOKEN='your-api-token'
+export JIRA_PROJECT_KEY='HOME'
+export JIRA_PROJECT_NAME='Personal Projects'
+export JIRA_EPICS='Website Revamp,Mobile App Launch,Ops Cleanup'
+./scripts/setup_jira_minimal.sh
+```
+
+Then seed a standard hierarchy under each Epic:
+
+```bash
+export JIRA_TASK_TEMPLATES='项目规划与范围定义,里程碑拆解与排期,执行与推进,测试验收与收尾'
+export JIRA_SUBTASK_TEMPLATES='本周动作,风险与阻塞'
+./scripts/seed_jira_hierarchy.sh
+```
+
+Classify items into roadmap/milestone/plan/task layers:
+
+```bash
+export JIRA_MILESTONES='M1 方案确认,M2 MVP 可用,M3 发布上线'
+export JIRA_PLAN_KEYWORDS='规划,排期,拆解,计划'
+./scripts/classify_jira_layers.sh
+```
+
+Reset to a single real project scope (EchoHelix Client), archive templates, and seed real requirements:
+
+```bash
+./scripts/reset_echohelix_client_real_data.sh
+```
+
+Create multiple project spaces with a clear hierarchy in each space:
+
+```bash
+./scripts/bootstrap_jira_spaces_clear_hierarchy.sh
+```
+
+If duplicate roadmap epics appear after reruns, keep one main chain and archive duplicates:
+
+```bash
+./scripts/dedupe_jira_roadmaps.sh
+```
 
 After install:
 
@@ -166,6 +249,8 @@ Interactive session backend switches:
 10. `BACKEND_CALL_READ_METHODS` (default: `status`)
 11. `BACKEND_CALL_CANCEL_METHODS` (default: `turn/interrupt`)
 12. `BACKEND_CALL_BLOCKED_METHODS` (default: `initialize,initialized`)
+13. `SESSION_RETENTION_SECONDS` (default: `21600`, 6h)
+14. `SESSION_CLEANUP_INTERVAL_SECONDS` (default: `300`, 5m)
 
 ## API
 

@@ -22,12 +22,13 @@ import (
 )
 
 type Server struct {
-	httpServer *http.Server
-	runSvc     *run.Service
-	sessionSvc *session.Service
-	authToken  string
-	authSvc    *auth.Service
-	security   SecurityConfig
+	httpServer       *http.Server
+	runSvc           *run.Service
+	sessionSvc       *session.Service
+	authToken        string
+	authSvc          *auth.Service
+	security         SecurityConfig
+	trustedProxyNets []*net.IPNet
 
 	pairStartLimiter         *windowLimiter
 	refreshFailureCounter    *windowCounter
@@ -44,12 +45,17 @@ func New(addr string, authToken string, runSvc *run.Service, sessionSvc *session
 	if len(securityCfg) > 0 {
 		cfg = normalizeSecurityConfig(securityCfg[0])
 	}
+	trustedNets, invalidCIDRs := parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
+	for _, cidr := range invalidCIDRs {
+		log.Printf("warn: ignore invalid trusted proxy cidr %q", cidr)
+	}
 	s := &Server{
 		runSvc:                   runSvc,
 		sessionSvc:               sessionSvc,
 		authToken:                authToken,
 		authSvc:                  authSvc,
 		security:                 cfg,
+		trustedProxyNets:         trustedNets,
 		pairStartLimiter:         newWindowLimiter(cfg.PairStartRateLimit, cfg.PairStartRateWindow),
 		refreshFailureCounter:    newWindowCounter(cfg.RefreshFailureAlertWindow),
 		authFailureCounter:       newWindowCounter(cfg.AuthFailureAlertWindow),
@@ -129,6 +135,13 @@ func (s *Server) authenticate(r *http.Request) (auth.Principal, error) {
 			return auth.Principal{}, fmt.Errorf("missing or invalid bearer token")
 		}
 		token = strings.TrimSpace(parts[1])
+	}
+	if token == "" && websocket.IsWebSocketUpgrade(r) {
+		// Browser WebSocket cannot set custom Authorization headers reliably.
+		token = strings.TrimSpace(r.URL.Query().Get("access_token"))
+		if token == "" {
+			token = strings.TrimSpace(r.URL.Query().Get("token"))
+		}
 	}
 
 	if s.authToken == "" && s.authSvc == nil {
@@ -1060,22 +1073,86 @@ func pairURI(r *http.Request, code, challenge string) string {
 }
 
 func (s *Server) clientIP(r *http.Request) string {
-	if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
-		parts := strings.Split(v, ",")
-		if len(parts) > 0 {
-			if ip := strings.TrimSpace(parts[0]); ip != "" {
-				return ip
-			}
-		}
-	}
-	host := strings.TrimSpace(r.RemoteAddr)
+	host := remoteHost(r.RemoteAddr)
 	if host == "" {
 		return "unknown"
+	}
+	remoteIP := parseIP(host)
+	if remoteIP == nil {
+		return host
+	}
+	if s.isTrustedProxy(remoteIP) {
+		if clientIP := firstForwardedForIP(r.Header.Get("X-Forwarded-For")); clientIP != nil {
+			return clientIP.String()
+		}
+	}
+	return remoteIP.String()
+}
+
+func (s *Server) isTrustedProxy(ip net.IP) bool {
+	if ip == nil || len(s.trustedProxyNets) == 0 {
+		return false
+	}
+	for _, network := range s.trustedProxyNets {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseTrustedProxyCIDRs(values []string) ([]*net.IPNet, []string) {
+	out := make([]*net.IPNet, 0, len(values))
+	invalid := make([]string, 0)
+	for _, item := range values {
+		value := strings.TrimSpace(item)
+		if value == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			invalid = append(invalid, value)
+			continue
+		}
+		out = append(out, network)
+	}
+	return out, invalid
+}
+
+func firstForwardedForIP(value string) net.IP {
+	for _, part := range strings.Split(value, ",") {
+		candidate := strings.TrimSpace(part)
+		if candidate == "" {
+			continue
+		}
+		if host, _, err := net.SplitHostPort(candidate); err == nil && host != "" {
+			candidate = host
+		}
+		ip := parseIP(candidate)
+		if ip != nil {
+			return ip
+		}
+	}
+	return nil
+}
+
+func remoteHost(remoteAddr string) string {
+	host := strings.TrimSpace(remoteAddr)
+	if host == "" {
+		return ""
 	}
 	if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
 		return h
 	}
 	return host
+}
+
+func parseIP(value string) net.IP {
+	candidate := strings.Trim(strings.TrimSpace(value), "[]")
+	if candidate == "" {
+		return nil
+	}
+	return net.ParseIP(candidate)
 }
 
 func (s *Server) auditf(r *http.Request, event, detail string) {

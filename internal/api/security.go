@@ -16,6 +16,7 @@ type SecurityConfig struct {
 	PairCompleteFailureAlertWindow time.Duration
 	BackendCallReadMethods         []string
 	BackendCallCancelMethods       []string
+	TrustedProxyCIDRs              []string
 }
 
 func defaultSecurityConfig() SecurityConfig {
@@ -64,6 +65,9 @@ func normalizeSecurityConfig(cfg SecurityConfig) SecurityConfig {
 	}
 	if len(cfg.BackendCallCancelMethods) == 0 {
 		cfg.BackendCallCancelMethods = append([]string{}, def.BackendCallCancelMethods...)
+	}
+	if len(cfg.TrustedProxyCIDRs) > 0 {
+		cfg.TrustedProxyCIDRs = append([]string{}, cfg.TrustedProxyCIDRs...)
 	}
 	return cfg
 }

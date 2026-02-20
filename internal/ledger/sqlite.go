@@ -181,6 +181,30 @@ func (s *Store) UpdateRunStatus(ctx context.Context, runID, status, errText stri
 	return err
 }
 
+func (s *Store) UpdateRunStatusIfNotTerminal(ctx context.Context, runID, status, errText string) (bool, error) {
+	res, err := s.db.ExecContext(
+		ctx,
+		`UPDATE runs
+		 SET status=?, error_text=?, updated_at=?
+		 WHERE run_id=? AND status NOT IN (?, ?, ?)`,
+		status,
+		errText,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		runID,
+		"cancelled",
+		"completed",
+		"failed",
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 func (s *Store) GetRun(ctx context.Context, runID string) (RunRecord, error) {
 	var out RunRecord
 	var tsCreated, tsUpdated string

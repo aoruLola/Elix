@@ -10,5 +10,3 @@ bridge.db
 *.tar.gz
 .env
 .env.*
-frontend/
-Elix-Web/

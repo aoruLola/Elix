@@ -116,6 +116,38 @@ func TestSessionCreateTurnAndApprovalFlow(t *testing.T) {
 	}
 }
 
+func TestSessionCleanupRemovesExpiredClosedSessions(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	fakeCodex := writeFakeCodex(t, root)
+
+	svc := NewService(Config{
+		CodexBin:             fakeCodex,
+		StartTimeout:         3 * time.Second,
+		RequestTimeout:       3 * time.Second,
+		SessionRetention:     50 * time.Millisecond,
+		SessionCleanupPeriod: 10 * time.Millisecond,
+	}, policy.New([]string{root}))
+
+	sess, err := svc.Create(context.Background(), CreateRequest{WorkspacePath: workspace, Backend: "codex"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := svc.Close(sess.ID); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+	_ = svc.List() // trigger lazy cleanup
+
+	if _, err := svc.Get(sess.ID); err == nil {
+		t.Fatalf("expected expired closed session to be cleaned up")
+	}
+}
+
 func testSessionCreateSupportsBackend(t *testing.T, backend string) {
 	t.Helper()
 	root := t.TempDir()
