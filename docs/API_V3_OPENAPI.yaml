@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: EchoHelix Bridge API v3
-  version: 3.0.0
+  version: 3.0.1
   description: |
     Bridge control-plane API with scoped session auth.
     `BRIDGE_AUTH_TOKEN` is bootstrap-only and is intended for pairing/admin ops.
@@ -11,6 +11,20 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /healthz:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
   /api/v3/pair/start:
     post:
       summary: Start secure pairing flow
@@ -178,6 +192,74 @@ paths:
       responses:
         "200":
           description: Backends list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackendListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/usage/tokens:
+    get:
+      summary: Aggregate token usage in a time window
+      description: Requires session scope `backends:read`.
+      parameters:
+        - in: query
+          name: window
+          required: false
+          schema:
+            type: string
+          description: Go duration format, for example `24h` or `30m`.
+        - in: query
+          name: from
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: RFC3339 timestamp. Overrides `window` start when provided.
+        - in: query
+          name: to
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: RFC3339 timestamp. Defaults to current server time.
+        - in: query
+          name: backend
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Token usage summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenUsageSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v3/usage/quota:
+    get:
+      summary: Get token quota usage for current UTC day
+      description: Requires session scope `backends:read`.
+      parameters:
+        - in: query
+          name: backend
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Quota usage list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenQuotaListResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -504,7 +586,10 @@ paths:
   /api/v3/sessions/{session_id}/events:
     get:
       summary: Stream session events (WebSocket)
-      description: Requires session scope `runs:read`.
+      description: |
+        Requires session scope `runs:read`.
+        Use `Authorization: Bearer <token>` by default. Browser clients may use
+        `?access_token=<token>` (or legacy `?token=<token>`) on the WebSocket URL.
       parameters:
         - in: path
           name: session_id
@@ -515,6 +600,18 @@ paths:
           name: from_seq
           schema:
             type: integer
+        - in: query
+          name: access_token
+          required: false
+          schema:
+            type: string
+          description: Optional bearer token for browser WebSocket clients.
+        - in: query
+          name: token
+          required: false
+          schema:
+            type: string
+          description: Legacy alias for `access_token`.
       responses:
         "101":
           description: Switching Protocols
@@ -691,6 +788,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v3/runs/{run_id}/cancel:
     post:
       summary: Cancel run
@@ -710,6 +809,10 @@ paths:
   /api/v3/runs/{run_id}/events:
     get:
       summary: Stream run events (WebSocket)
+      description: |
+        Requires session scope `runs:read`.
+        Use `Authorization: Bearer <token>` by default. Browser clients may use
+        `?access_token=<token>` (or legacy `?token=<token>`) on the WebSocket URL.
       parameters:
         - in: path
           name: run_id
@@ -720,6 +823,18 @@ paths:
           name: from_seq
           schema:
             type: integer
+        - in: query
+          name: access_token
+          required: false
+          schema:
+            type: string
+          description: Optional bearer token for browser WebSocket clients.
+        - in: query
+          name: token
+          required: false
+          schema:
+            type: string
+          description: Legacy alias for `access_token`.
       responses:
         "101":
           description: Switching Protocols
@@ -860,6 +975,97 @@ components:
         refresh_expires_at:
           type: string
           format: date-time
+    BackendHealth:
+      type: object
+      properties:
+        ok: { type: boolean }
+        message: { type: string }
+    BackendCapabilities:
+      type: object
+      properties:
+        backend: { type: string }
+        event_types:
+          type: array
+          items:
+            type: string
+        supports_cancel: { type: boolean }
+        supports_pty: { type: boolean }
+        schema_versions:
+          type: array
+          items:
+            type: string
+        preferred_schema_version: { type: string }
+        compat_fields:
+          type: array
+          items:
+            type: string
+    BackendInfo:
+      type: object
+      properties:
+        name: { type: string }
+        health:
+          $ref: "#/components/schemas/BackendHealth"
+        capabilities:
+          $ref: "#/components/schemas/BackendCapabilities"
+        capabilities_error:
+          type: string
+    BackendListResponse:
+      type: object
+      properties:
+        backends:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackendInfo"
+    TokenUsageTotals:
+      type: object
+      properties:
+        run_count: { type: integer }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        total_tokens: { type: integer }
+    TokenUsageByBackend:
+      allOf:
+        - type: object
+          properties:
+            backend: { type: string }
+        - $ref: "#/components/schemas/TokenUsageTotals"
+    TokenUsageSummary:
+      type: object
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        totals:
+          $ref: "#/components/schemas/TokenUsageTotals"
+        by_backend:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenUsageByBackend"
+    TokenQuotaItem:
+      type: object
+      properties:
+        backend: { type: string }
+        window_from:
+          type: string
+          format: date-time
+        window_to:
+          type: string
+          format: date-time
+        configured: { type: boolean }
+        quota_tokens: { type: integer }
+        used_tokens: { type: integer }
+        remaining_tokens: { type: integer }
+        exceeded: { type: boolean }
+    TokenQuotaListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenQuotaItem"
     Device:
       type: object
       properties:
