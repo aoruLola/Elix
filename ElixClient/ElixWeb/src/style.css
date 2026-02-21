@@ -1,0 +1,45 @@
+@config "../tailwind.config.js";
+@import "tailwindcss";
+@import "tailwindcss-primeui";
+
+@theme {
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+}
+
+:root {
+  color-scheme: dark;
+  --ios26-bg: #070a11;
+  --ios26-bg-elevated: #0b111b;
+  --ios26-surface: rgba(20, 28, 42, 0.56);
+  --ios26-surface-soft: rgba(16, 23, 36, 0.44);
+  --ios26-surface-strong: rgba(32, 43, 62, 0.72);
+  --ios26-text-primary: #edf2ff;
+  --ios26-text-secondary: #c5cde0;
+  --ios26-text-tertiary: #93a1bd;
+  --ios26-accent: #8eb8ff;
+  --ios26-shadow: rgba(1, 5, 16, 0.42);
+  --ios26-gradient-top: rgba(96, 154, 255, 0.2);
+  --ios26-gradient-bottom: rgba(42, 67, 113, 0.16);
+  --ios26-overlay-bottom: rgba(8, 11, 18, 0.85);
+  --ios26-border-soft: rgba(255, 255, 255, 0.12);
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  min-width: 320px;
+  overflow: hidden;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background-color: var(--ios26-bg);
+  background-image:
+    radial-gradient(78% 56% at 50% -10%, var(--ios26-gradient-top), transparent 72%),
+    radial-gradient(62% 44% at 50% 108%, var(--ios26-gradient-bottom), transparent 72%);
+  color: var(--ios26-text-primary);
+}
+
+#app {
+  height: 100%;
+  overflow: hidden;
+}

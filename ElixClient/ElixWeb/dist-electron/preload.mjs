@@ -1,1 +1,0 @@
-let e=require(`electron`);e.contextBridge.exposeInMainWorld(`electronAPI`,{onUpdate:t=>e.ipcRenderer.on(`update`,t)});
